@@ -154,7 +154,13 @@ one core) with real pages; storage figures are typical values except the last, m
   <h3>Repeats (run-to-run noise)</h3>
   <div class="tw"><table><tr><th>Point</th><th>run 1 tps</th><th>run 2 tps</th><th>difference</th></tr>@REPROWS@</table></div>
   <h3>zswap with a larger pool cap, zram with a disk fallback, zram writeback</h3>
-  <p class="note">zram capped at 12 GB with the 2nd-SSD swap file as a lower-priority fallback, with and without zram writeback of idle pages; zswap with max_pool_percent 80 and 12.</p>
+  <p class="note">zram capped at 12 GB of uncompressed pages (~3.6 GB of RAM) with the 2nd-SSD swap file as a lower-priority fallback (<code>swapon -p 100 /dev/zram0; swapon -p 10 swapfile</code>), with and without zram writeback of idle pages every minute; zswap with <code>max_pool_percent</code> 80 and 12 (12% ≈ the same compressed size as the capped zram).</p>
+  <ul class="findings">
+    <li><strong>zram with a lower-priority disk fallback works</strong>: no OOM, +77–105% over normal swap, but once zram is full the rest goes to disk (18–32k reads/s from the 2nd SSD).</li>
+    <li><strong>With the same compressed size, zram + fallback beats zswap</strong> (1,566 vs 1,353 tps at 40 GB; 1,804 vs 1,322 at 44 GB).</li>
+    <li><strong>zram writeback did not help</strong> on this uniform workload (1,536 vs 1,566): the pages it wrote out were read back about as fast. It needs a workload with a genuinely cold set.</li>
+    <li><strong>zswap's gap to zram is not its pool cap</strong>: 80% instead of 50% changed little (1,711 vs 1,698 at 40 GB).</li>
+  </ul>
   <div class="tw"><table><tr><th>Run</th><th>tps</th><th>vs baseline</th><th>p95 ms</th></tr>@EXTRAROWS@</table></div>
 </div>
 

@@ -225,8 +225,21 @@ Findings:
 
 Repeats (second run of the same point): disk 26 GB 882 / 877 tps, zram-lz4 40 GB 2,286 / 2,283, zswap-lz4 40 GB
 1,698 / 1,696 - all within 0.6%; zram-zstd 40 GB 1,761 / 1,563 (11%: zstd's CPU-bound runs are less stable).
-Follow-ups (zram capped at 12 GB with a lower-priority disk swap fallback, with and without zram writeback; zswap with
-max_pool_percent 12) are running.
+Follow-ups: zram capped at 12 GB of uncompressed pages (~3.6 GB RAM) with the 2nd-SSD swap file as a lower-priority
+fallback (`zramdisk`), the same with zram writeback of pages idle for a minute (`zramwb`), and zswap with
+`max_pool_percent` 12 (about the same compressed size):
+
+| Mode | 40 GB tps | 44 GB tps | p95 ms (40) | 2nd-SSD reads/s (40) |
+|---|---|---|---|---|
+| zram (64 GB device, all data fits) | 2,286 | 2,273 | 50 | 0 |
+| zswap-lz4, max_pool_percent 50 / 80 | 1,698 / 1,711 | 1,682 / 1,833 | 83 / 81 | ~1,400 / 1,900 |
+| zramdisk-lz4 (zram 12 GB + disk fallback) | 1,566 | 1,804 | 99 | 18,250 |
+| zramwb-lz4 (+ writeback every 60 s) | 1,536 | 1,772 | 94 | 20,530 |
+| zswap-lz4, max_pool_percent 12 | 1,353 | 1,322 | 76 | 30,730 |
+
+zram with a lower-priority disk swap works as a safety net (no OOM, still +77-105% over normal swap) and beats zswap
+with the same compressed size; writeback did not help on this uniform workload (it moved ~1.9 GB to disk and read pages
+back about as fast as it wrote them).
 
 ## Page compression and decompression time vs storage latency
 
