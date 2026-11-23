@@ -1,0 +1,5 @@
+zram-zswap-db-benchmark
+Copyright 2026 Percona LLC
+
+Scripts and tools are licensed under the Apache License, Version 2.0 (see LICENSE).
+Results (data/) and the README text are licensed under CC BY 4.0.
