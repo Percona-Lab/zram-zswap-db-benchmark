@@ -156,6 +156,7 @@ one core) with real pages; storage figures are typical values except the last, m
   <h3>zswap with a larger pool cap, zram with a disk fallback, zram writeback</h3>
   <p class="note">zram capped at 12 GB of uncompressed pages (~3.6 GB of RAM) with the 2nd-SSD swap file as a lower-priority fallback (<code>swapon -p 100 /dev/zram0; swapon -p 10 swapfile</code>), with and without zram writeback of idle pages every minute; zswap with <code>max_pool_percent</code> 80 and 12 (12% ≈ the same compressed size as the capped zram).</p>
   <ul class="findings">
+    <li><strong>This is a limited-memory simulation, not comparable with the uncapped zram run</strong>: the 12 GB cap gives zram ~3.6 GB of RAM where the uncapped device used ~6 GB, and leaves RAM unused. Compare it only with zswap at 12% (similar compressed budget). The fair test, growing the data set past what fits compressed with every setup uncapped, is round 5 (below).</li>
     <li><strong>zram with a lower-priority disk fallback works</strong>: no OOM, +77–105% over normal swap, but once zram is full the rest goes to disk (18–32k reads/s from the 2nd SSD).</li>
     <li><strong>With the same compressed size, zram + fallback beats zswap</strong> (1,566 vs 1,353 tps at 40 GB; 1,804 vs 1,322 at 44 GB).</li>
     <li><strong>zram writeback did not help</strong> on this uniform workload (1,536 vs 1,566): the pages it wrote out were read back about as fast. It needs a workload with a genuinely cold set.</li>
@@ -163,6 +164,12 @@ one core) with real pages; storage figures are typical values except the last, m
   </ul>
   <div class="tw"><table><tr><th>Run</th><th>tps</th><th>vs baseline</th><th>p95 ms</th></tr><tr><td>zswap-lz4-40-p80</td><td>1,710</td><td>+94%</td><td>81.48</td></tr><tr><td>zswap-lz4-44-p80</td><td>1,833</td><td>+108%</td><td>66.84</td></tr><tr><td>zramdisk-lz4-40-r1</td><td>1,566</td><td>+78%</td><td>99.33</td></tr><tr><td>zramdisk-lz4-44-r1</td><td>1,804</td><td>+105%</td><td>77.19</td></tr><tr><td>zramwb-lz4-40-r1</td><td>1,536</td><td>+74%</td><td>94.1</td></tr><tr><td>zramwb-lz4-44-r1</td><td>1,772</td><td>+101%</td><td>81.48</td></tr><tr><td>zswap-lz4-40-p12</td><td>1,353</td><td>+53%</td><td>75.82</td></tr><tr><td>zswap-lz4-44-p12</td><td>1,322</td><td>+50%</td><td>81.48</td></tr></table></div>
 </div>
+
+<h2>Coming next</h2>
+<ul class="findings">
+  <li><strong>Other ways to compress</strong> (running): InnoDB table compression (zlib, KEY_BLOCK_SIZE 8 and 4), InnoDB page compression, ZFS with compressed ARC (lz4, zstd), MyRocks (lz4, zstd).</li>
+  <li><strong>Data size sweep</strong> (queued): 36 → 75 GB of the same compressible data. zram alone vs zram + lower-priority swap vs zswap + swap (same ~10 GB compressed budget) vs swap alone vs normal swap: does zram + swap match zram while the data fits compressed and degrade instead of OOM when it doesn't?</li>
+</ul>
 
 <h2>Setup</h2>
 <ul class="findings">
