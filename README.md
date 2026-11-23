@@ -13,7 +13,7 @@ measured, but the write-up and conclusions are AI-generated and were spot-checke
 
 * **When the data fits in RAM only once compressed, zram with lz4 is a large win**: a 40 GB uniform sysbench
   read/write data set on a 31 GB server ran at **2,286 tps with a 40 GB buffer pool on zram lz4 vs 882 tps for the best
-  pool without compression (26 GB): +159%, p95 latency 50 ms vs 170 ms** (round 3; single runs, repeats pending).
+  pool without compression (26 GB): +159%, p95 latency 50 ms vs 170 ms** (round 3; repeat runs within 0.6%).
 * **zram beat zswap** (zswap +93%): zswap's compressed pool is capped (max_pool_percent 50) and spills to the swap
   device. **lz4 beat zstd** (zram zstd +100%): once lz4 fits the data, zstd's better ratio buys nothing and its CPU cost
   limits throughput.
@@ -214,15 +214,19 @@ Findings:
    The server becomes CPU-bound instead of I/O-bound, and CPU per transaction is no worse than with disk I/O
    (41.7% CPU per 1k tps for zram-lz4 40 GB and for disk 26 GB).
 2. **zram beats zswap here**: zswap's pool is capped at 50% of RAM (`max_pool_percent`); beyond it pages are written
-   back to the swap file (1-12k/s), and with zstd the swap device is hit hard (13-16k reads/s at 40-48 GB). A run with
-   `max_pool_percent=80` is pending.
+   back to the swap file (1-12k/s), and with zstd the swap device is hit hard (13-16k reads/s at 40-48 GB). Raising
+   `max_pool_percent` to 80 did not close the gap (40 GB: 1,711 vs 1,698 tps; 44 GB: 1,833): zswap keeps writing cold
+   pages back (the zswap shrinker, on by default in 6.8) and reads them from disk on a miss.
 3. **lz4 beats zstd once lz4 is enough**: zstd compresses ~2x better but costs ~6x more CPU to decompress; with sys CPU
    at 53-55% it tops out at +100% (zram) and +63% (zswap).
 4. **Pools beyond the data set size add nothing** (44 / 48 GB = 40 GB), and **disk swap beyond the best plain size
    hurts** (28 GB: -9%).
 5. The second SSD alone (disk2) gives +40% at 40 GB: a fast swap device is a cache tier too; compression adds the rest.
 
-Repeats of the main points (noise) are running; this section will be updated.
+Repeats (second run of the same point): disk 26 GB 882 / 877 tps, zram-lz4 40 GB 2,286 / 2,283, zswap-lz4 40 GB
+1,698 / 1,696 - all within 0.6%; zram-zstd 40 GB 1,761 / 1,563 (11%: zstd's CPU-bound runs are less stable).
+Follow-ups (zram capped at 12 GB with a lower-priority disk swap fallback, with and without zram writeback; zswap with
+max_pool_percent 12) are running.
 
 ## Page compression and decompression time vs storage latency
 

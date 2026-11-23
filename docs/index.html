@@ -112,8 +112,8 @@ buffer pool was full of data during the measured window.</p>
 
 <ul class="findings">
   <li><strong>zram with lz4 is the clear winner</strong>: at a 40 GB pool all data stays in memory (InnoDB disk reads ~0/s), part of it compressed at ~3.3×. The server turns from I/O-bound into CPU-bound, and CPU per transaction is no higher than with disk I/O.</li>
-  <li><strong>zswap trails zram</strong> because its compressed pool is capped (<code>max_pool_percent=50</code>) and spills to the swap disk. A run with the cap at 80% is pending.</li>
-  <li><strong>lz4 beats zstd</strong> once lz4 already fits the data: zstd compresses ~2× better but costs ~6× more CPU to decompress, and CPU becomes the limit.</li>
+  <li><strong>zswap trails zram</strong> (+93% vs +159%), and it is not the pool cap: raising <code>max_pool_percent</code> from 50 to 80 changed nothing at 40 GB (1,711 vs 1,698 tps). zswap keeps writing cold pages back to the swap disk (1–5k pages/s, the zswap shrinker is on by default in kernel 6.8), and every miss is a disk read; zram never touches the disk.</li>
+  <li><strong>lz4 beats zstd</strong> once lz4 already fits the data: zstd compresses ~2× better but costs ~6× more CPU to decompress, and CPU becomes the limit. zstd is also less stable: its two runs at 40 GB differ by 11% (1,761 vs 1,563 tps), while every other repeated point is within 1%.</li>
   <li><strong>A plain swap file on a second SSD</strong> also helps (+40% at 40 GB): a fast swap device acts as an extra cache tier. Compression adds the rest.</li>
   <li><strong>Disk swap past the best size hurts</strong>: normal swap at 28 GB is slower than at 26 GB. Compressed swap made oversizing harmless in every round.</li>
 </ul>
@@ -152,10 +152,10 @@ one core) with real pages; storage figures are typical values except the last, m
 <h2>Repeatability and follow-up tests</h2>
 <div class="card">
   <h3>Repeats (run-to-run noise)</h3>
-  <div class="tw"><table><tr><th>Point</th><th>run 1 tps</th><th>run 2 tps</th><th>difference</th></tr><tr><td>disk-26</td><td>882</td><td>pending</td><td></td></tr><tr><td>zram-lz4-40</td><td>2,286</td><td>pending</td><td></td></tr><tr><td>zram-zstd-40</td><td>1,761</td><td>pending</td><td></td></tr><tr><td>zswap-lz4-40</td><td>1,698</td><td>pending</td><td></td></tr></table></div>
+  <div class="tw"><table><tr><th>Point</th><th>run 1 tps</th><th>run 2 tps</th><th>difference</th></tr><tr><td>disk-26</td><td>882</td><td>876</td><td>0.6%</td></tr><tr><td>zram-lz4-40</td><td>2,286</td><td>2,283</td><td>0.1%</td></tr><tr><td>zram-zstd-40</td><td>1,761</td><td>1,563</td><td>11.2%</td></tr><tr><td>zswap-lz4-40</td><td>1,698</td><td>1,696</td><td>0.1%</td></tr></table></div>
   <h3>zswap with a larger pool cap, zram with a disk fallback, zram writeback</h3>
   <p class="note">zram capped at 12 GB with the 2nd-SSD swap file as a lower-priority fallback, with and without zram writeback of idle pages; zswap with max_pool_percent 80 and 12.</p>
-  <div class="tw"><table><tr><th>Run</th><th>tps</th><th>vs baseline</th><th>p95 ms</th></tr><tr><td colspan=4>running</td></tr></table></div>
+  <div class="tw"><table><tr><th>Run</th><th>tps</th><th>vs baseline</th><th>p95 ms</th></tr><tr><td>zswap-lz4-40-p80</td><td>1,710</td><td>+94%</td><td>81.48</td></tr><tr><td>zswap-lz4-44-p80</td><td>1,833</td><td>+108%</td><td>66.84</td></tr></table></div>
 </div>
 
 <h2>Setup</h2>
