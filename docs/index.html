@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zram and zswap for MySQL</title>
+<meta name="description" content="Can Linux zram or zswap let the InnoDB buffer pool grow past RAM? Benchmark results, data compressibility of 16 benchmarks, and codec vs storage latency.">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f5f2; --surface-1: #fcfcfb; --border: #e4e2dc; --grid: #ebe9e4;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #77756f;
+  --accent: #2a78d6;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+  --tip-bg: #0b0b0b; --tip-fg: #fcfcfb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211; --surface-1: #1a1a19; --border: #2e2e2b; --grid: #2a2a27;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #9a998f;
+    --accent: #3987e5;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c;
+    --tip-bg: #f0efec; --tip-fg: #1a1a19;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211; --surface-1: #1a1a19; --border: #2e2e2b; --grid: #2a2a27;
+  --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #9a998f;
+  --accent: #3987e5;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c;
+  --tip-bg: #f0efec; --tip-fg: #1a1a19;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text-primary);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: clamp(26px, 4vw, 38px); line-height: 1.15; margin: 0 0 12px; letter-spacing: -0.01em; }
+h2 { font-size: 22px; margin: 48px 0 8px; }
+h3 { font-size: 16px; margin: 20px 0 6px; }
+p { margin: 8px 0; color: var(--text-secondary); max-width: 760px; }
+p strong, li strong { color: var(--text-primary); }
+a { color: var(--accent); }
+.lede { font-size: 18px; color: var(--text-secondary); }
+.note { font-size: 14px; color: var(--text-muted); }
+.disclosure { border-left: 3px solid var(--border); padding: 8px 14px; margin: 20px 0; font-size: 14px; color: var(--text-secondary); background: var(--surface-1); border-radius: 0 8px 8px 0; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 24px 0; }
+.tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+.tile .v { font-size: 32px; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.tile .k { font-size: 14px; color: var(--text-secondary); margin-top: 4px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin: 16px 0; }
+.card h3 { margin-top: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--text-secondary); margin: 4px 0 8px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.legend i.sq { height: 10px; width: 10px; border-radius: 2px; }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+svg text { fill: var(--text-muted); font-size: 12px; }
+svg .lbl { fill: var(--text-secondary); font-size: 12px; }
+svg .val { fill: var(--text-primary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.tip { position: fixed; pointer-events: none; background: var(--tip-bg); color: var(--tip-fg); font-size: 13px; line-height: 1.4;
+  padding: 8px 10px; border-radius: 8px; opacity: 0; transition: opacity .1s; z-index: 10; max-width: 280px; }
+ul.findings { padding-left: 20px; color: var(--text-secondary); max-width: 780px; }
+ul.findings li { margin: 6px 0; }
+details { margin: 8px 0; }
+summary { cursor: pointer; color: var(--text-secondary); font-size: 14px; }
+.tw { overflow-x: auto; }
+table { border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; margin: 8px 0; min-width: 100%; }
+th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--text-secondary); font-weight: 600; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+footer { margin-top: 56px; font-size: 13px; color: var(--text-muted); border-top: 1px solid var(--border); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+<p class="note">Percona Lab · benchmark study · November 2026</p>
+<h1>zram and zswap for MySQL: letting the InnoDB buffer pool grow past RAM</h1>
+<p class="lede">Can Linux compressed memory (zram, zswap) make an I/O-bound InnoDB workload faster by letting
+<code>innodb_buffer_pool_size</code> exceed what fits in RAM? Yes, by a lot, but only when the data compresses well
+and the frequently used data does not fit in RAM uncompressed.</p>
+
+<div class="disclosure">This study was run and written up by an AI agent (Claude) under the direction of a person.
+The numbers are measured; the write-up and conclusions are AI-generated and were spot-checked only, so they may
+contain mistakes. Scripts and raw data: <a href="https://github.com/Percona-Lab/zram-zswap-db-benchmark">github.com/Percona-Lab/zram-zswap-db-benchmark</a>.</div>
+
+<div class="tiles">
+  <div class="tile"><div class="v">+159%</div><div class="k">throughput with zram lz4 and a 40 GB buffer pool on a 31 GB server (2,286 vs 882 tps)</div></div>
+  <div class="tile"><div class="v">50 ms</div><div class="k">p95 latency, down from 170 ms with the best pool that fits without compression</div></div>
+  <div class="tile"><div class="v">~1 µs</div><div class="k">lz4 decompression of a 4 KiB page, vs ~50–200 µs for an idle SSD read</div></div>
+  <div class="tile"><div class="v">1.1–1.4×</div><div class="k">how well common OLTP benchmarks' InnoDB pages compress with lz4: too little to test this</div></div>
+</div>
+
+<h2>The headline test</h2>
+<p>sysbench <code>oltp_read_write</code>, 64 threads, uniform access over 36 GB of tables (49 GB on disk), binary log off.
+The data was made compressible (~3× with lz4, ~6× with zstd) with
+<a href="https://github.com/Percona-Lab/sysbench-compressible">sysbench-compressible</a>: it cannot fit in the buffer
+pool uncompressed on this 31 GB server, but fits in RAM once compressed. 15 min warm-up + 10 min measured; every
+buffer pool was full of data during the measured window.</p>
+
+<div class="card">
+  <h3>Throughput by buffer pool size</h3>
+  <div class="legend" id="lg1"></div>
+  <div id="c1"></div>
+  <details><summary>Table view (transactions per second)</summary><div class="tw"><table>
+    <tr><th>Mode</th><th>16</th><th>20</th><th>24</th><th>26</th><th>28</th><th>32</th><th>36</th><th>40</th><th>44</th><th>48 GB</th></tr>
+    <tr><td>zram lz4</td><td></td><td></td><td></td><td></td><td></td><td>1,228</td><td>1,692</td><td>2,286</td><td>2,273</td><td>2,284</td></tr><tr><td>zswap lz4</td><td></td><td></td><td></td><td></td><td></td><td>1,167</td><td>1,304</td><td>1,698</td><td>1,682</td><td>1,632</td></tr><tr><td>zram zstd</td><td></td><td></td><td></td><td></td><td></td><td>1,195</td><td>1,202</td><td>1,761</td><td>1,689</td><td>1,689</td></tr><tr><td>zswap zstd</td><td></td><td></td><td></td><td></td><td></td><td>1,139</td><td>1,169</td><td>1,440</td><td>1,229</td><td>1,260</td></tr><tr><td>swap file on 2nd SSD, no compression</td><td></td><td></td><td></td><td></td><td></td><td>932</td><td></td><td>1,233</td><td></td><td></td></tr><tr><td>normal swap (baseline)</td><td>511</td><td>653</td><td>794</td><td>882</td><td>799</td><td></td><td></td><td></td><td></td><td></td></tr></table></div></details>
+</div>
+
+<ul class="findings">
+  <li><strong>zram with lz4 is the clear winner</strong>: at a 40 GB pool all data stays in memory (InnoDB disk reads ~0/s), part of it compressed at ~3.3×. The server turns from I/O-bound into CPU-bound, and CPU per transaction is no higher than with disk I/O.</li>
+  <li><strong>zswap trails zram</strong> because its compressed pool is capped (<code>max_pool_percent=50</code>) and spills to the swap disk. A run with the cap at 80% is pending.</li>
+  <li><strong>lz4 beats zstd</strong> once lz4 already fits the data: zstd compresses ~2× better but costs ~6× more CPU to decompress, and CPU becomes the limit.</li>
+  <li><strong>A plain swap file on a second SSD</strong> also helps (+40% at 40 GB): a fast swap device acts as an extra cache tier. Compression adds the rest.</li>
+  <li><strong>Disk swap past the best size hurts</strong>: normal swap at 28 GB is slower than at 26 GB. Compressed swap made oversizing harmless in every round.</li>
+</ul>
+
+<h2>Why most benchmarks can't show this: page compressibility</h2>
+<p>The result depends on how well InnoDB pages compress. Each benchmark's data was loaded at small scale and every
+4 KiB piece of its table files compressed on its own, the way zram and zswap do. Most OLTP benchmarks generate
+random strings, which lz4 barely compresses. Even real data sets reach only ~1.7×.</p>
+
+<div class="card">
+  <h3>Compression ratio of InnoDB pages (4 KiB pieces)</h3>
+  <div class="legend"><span><i class="sq" style="background:var(--s1)"></i>lz4</span><span><i class="sq" style="background:var(--s2)"></i>zstd</span><span>· dashed line: 3×</span></div>
+  <div id="c2"></div>
+  <p class="note">* SmallBank's ratio comes from zero-padded 64-character customer names; the tables its transactions update compress ~2×.</p>
+  <details><summary>Table view</summary><div class="tw"><table><tr><th>Benchmark</th><th>lz4</th><th>zstd</th></tr><tr><td>BenchBase SmallBank*</td><td>3.49</td><td>6.32</td></tr><tr><td>sysbench, --data-random-pct=10</td><td>2.96</td><td>5.90</td></tr><tr><td>BenchBase AuctionMark</td><td>2.79</td><td>4.34</td></tr><tr><td>TPC-H (go-tpc)</td><td>2.38</td><td>3.26</td></tr><tr><td>BenchBase SEATS</td><td>2.27</td><td>3.13</td></tr><tr><td>BenchBase OT-Metrics</td><td>2.02</td><td>3.15</td></tr><tr><td>BenchBase Twitter</td><td>1.96</td><td>2.40</td></tr><tr><td>employees sample DB</td><td>1.76</td><td>2.41</td></tr><tr><td>IMDb (real data)</td><td>1.73</td><td>2.68</td></tr><tr><td>BenchBase TATP</td><td>1.59</td><td>2.35</td></tr><tr><td>BenchBase TPC-C</td><td>1.42</td><td>2.11</td></tr><tr><td>TPC-C (go-tpc)</td><td>1.36</td><td>1.84</td></tr><tr><td>HammerDB TPROC-C</td><td>1.33</td><td>1.72</td></tr><tr><td>BenchBase Wikipedia</td><td>1.22</td><td>1.45</td></tr><tr><td>sysbench (stock)</td><td>1.14</td><td>2.12</td></tr><tr><td>BenchBase YCSB</td><td>1.14</td><td>1.36</td></tr></table></div></details>
+</div>
+
+<h2>Compressed memory vs storage latency</h2>
+<p>Decompressing a page is far faster than reading it from any storage. Measured on this server's CPU (Xeon E3-1270 v6,
+one core) with real pages; storage figures are typical values except the last, measured under the benchmark load.</p>
+<div class="card">
+  <h3>Time to get one 16 KiB InnoDB page back (µs, log scale)</h3>
+  <div class="legend"><span><i class="sq" style="background:var(--s1)"></i>compressed memory</span><span><i class="sq" style="background:var(--s2)"></i>storage</span></div>
+  <div id="c3"></div>
+  <p class="note">Compressing a 4 KiB page: 4.4 µs (lz4), 14 µs (zstd). The whole kernel path (reclaim, faults, compression) cost roughly 25 µs of CPU per page swapped out and back in.</p>
+</div>
+
+<h2>Earlier rounds</h2>
+<div class="cols">
+  <div class="card"><h3>HammerDB TPROC-C, 1000 warehouses (~93 GB)</h3>
+    <p>Pages compress only ~1.25× with lz4. zram gained +10% at 32 GB and was OOM-killed beyond. zswap reached +21% at 40 GB, but the same swap file without zswap already gave +14%: most of the gain was the second SSD.</p></div>
+  <div class="card"><h3>BenchBase AuctionMark (~86 GB)</h3>
+    <p>CPU-bound, and the frequently used data (~23 GB) fit in RAM. Every setup tied (~7,500 req/s) and larger pools never filled. Compressed swap did make oversizing harmless; disk swap cost 13–22%.</p></div>
+</div>
+
+<h2>Repeatability and follow-up tests</h2>
+<div class="card">
+  <h3>Repeats (run-to-run noise)</h3>
+  <div class="tw"><table><tr><th>Point</th><th>run 1 tps</th><th>run 2 tps</th><th>difference</th></tr><tr><td>disk-26</td><td>882</td><td>pending</td><td></td></tr><tr><td>zram-lz4-40</td><td>2,286</td><td>pending</td><td></td></tr><tr><td>zram-zstd-40</td><td>1,761</td><td>pending</td><td></td></tr><tr><td>zswap-lz4-40</td><td>1,698</td><td>pending</td><td></td></tr></table></div>
+  <h3>zswap with a larger pool cap, zram with a disk fallback, zram writeback</h3>
+  <p class="note">zram capped at 12 GB with the 2nd-SSD swap file as a lower-priority fallback, with and without zram writeback of idle pages; zswap with max_pool_percent 80 and 12.</p>
+  <div class="tw"><table><tr><th>Run</th><th>tps</th><th>vs baseline</th><th>p95 ms</th></tr><tr><td colspan=4>running</td></tr></table></div>
+</div>
+
+<h2>Setup</h2>
+<ul class="findings">
+  <li>Bare metal: Intel Xeon E3-1270 v6 (4 cores / 8 threads), 31 GB RAM, 2 × 240 GB Intel SATA SSD. Ubuntu 24.04, kernel 6.8, Percona Server 8.4.11, binary log off.</li>
+  <li>Same server settings for every run; only the buffer pool size and swap setup change. Data restored before every run; clients on the same server.</li>
+  <li>zram: no disk swap, zswap off, priority 100. zswap: zsmalloc, max_pool_percent 50, 64 GB swap file on the second SSD. Compressed modes use <code>vm.page-cluster=0</code>, <code>vm.watermark_boost_factor=0</code>, <code>vm.watermark_scale_factor=125</code>, swappiness 180 (zram) / 100 (zswap).</li>
+</ul>
+
+<footer>Percona Lab · <a href="https://github.com/Percona-Lab/zram-zswap-db-benchmark">source, scripts and raw data</a> ·
+<a href="https://github.com/Percona-Lab/sysbench-compressible">sysbench-compressible</a> · results and text CC BY 4.0, code Apache 2.0.
+AI-generated, spot-checked only.</footer>
+</main>
+<div class="tip" id="tip"></div>
+<script>
+const D = {"series": [{"key": "zram-lz4", "label": "zram lz4", "pts": [[32.0, 1227.5, 137.35], [36.0, 1692.5, 90.78], [40.0, 2286.2, 50.11], [44.0, 2273.0, 51.02], [48.0, 2283.6, 51.02]]}, {"key": "zswap-lz4", "label": "zswap lz4", "pts": [[32.0, 1167.3, 132.49], [36.0, 1304.1, 121.08], [40.0, 1698.3, 82.96], [44.0, 1682.4, 82.96], [48.0, 1632.4, 87.56]]}, {"key": "zram-zstd", "label": "zram zstd", "pts": [[32.0, 1194.9, 130.13], [36.0, 1202.5, 139.85], [40.0, 1760.6, 71.83], [44.0, 1689.1, 74.46], [48.0, 1689.0, 74.46]]}, {"key": "zswap-zstd", "label": "zswap zstd", "pts": [[32.0, 1138.6, 137.35], [36.0, 1168.8, 130.13], [40.0, 1439.9, 196.89], [44.0, 1228.7, 282.25], [48.0, 1259.8, 267.41]]}, {"key": "disk2", "label": "swap file on 2nd SSD, no compression", "pts": [[32.0, 932.5, 139.85], [40.0, 1233.4, 92.42]]}, {"key": "disk", "label": "normal swap (baseline)", "pts": [[16.0, 511.0, 253.35], [20.0, 653.2, 215.44], [24.0, 794.0, 186.54], [26.0, 881.5, 170.48], [28.0, 798.9, 183.21]]}], "survey": [{"name": "BenchBase SmallBank*", "lz4": 3.49, "zstd": 6.32}, {"name": "sysbench, --data-random-pct=10", "lz4": 2.96, "zstd": 5.9, "ours": true}, {"name": "BenchBase AuctionMark", "lz4": 2.79, "zstd": 4.34}, {"name": "TPC-H (go-tpc)", "lz4": 2.38, "zstd": 3.26}, {"name": "BenchBase SEATS", "lz4": 2.27, "zstd": 3.13}, {"name": "BenchBase OT-Metrics", "lz4": 2.02, "zstd": 3.15}, {"name": "BenchBase Twitter", "lz4": 1.96, "zstd": 2.4}, {"name": "employees sample DB", "lz4": 1.76, "zstd": 2.41}, {"name": "IMDb (real data)", "lz4": 1.73, "zstd": 2.68}, {"name": "BenchBase TATP", "lz4": 1.59, "zstd": 2.35}, {"name": "BenchBase TPC-C", "lz4": 1.42, "zstd": 2.11}, {"name": "TPC-C (go-tpc)", "lz4": 1.36, "zstd": 1.84}, {"name": "HammerDB TPROC-C", "lz4": 1.33, "zstd": 1.72}, {"name": "BenchBase Wikipedia", "lz4": 1.22, "zstd": 1.45}, {"name": "sysbench (stock)", "lz4": 1.14, "zstd": 2.12}, {"name": "BenchBase YCSB", "lz4": 1.14, "zstd": 1.36}], "lat": [{"name": "lz4 decompress (16 KiB page)", "us": 4.2, "kind": "mem"}, {"name": "zstd decompress (16 KiB page)", "us": 24, "kind": "mem"}, {"name": "Local NVMe SSD read, idle", "us": 75, "kind": "disk"}, {"name": "SATA SSD read, idle", "us": 150, "kind": "disk"}, {"name": "Cloud network block storage read", "us": 750, "kind": "disk"}, {"name": "This server's SATA SSD under load", "us": 3300, "kind": "disk"}]};
+const NS = "http://www.w3.org/2000/svg";
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const el = (t, a, p) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); if (p) p.appendChild(e); return e; };
+const tip = document.getElementById("tip");
+function showTip(ev, h) { tip.innerHTML = h; tip.style.opacity = 1; const x = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8); tip.style.left = x + "px"; tip.style.top = (ev.clientY + 14) + "px"; }
+function hideTip() { tip.style.opacity = 0; }
+const fmt = n => n.toLocaleString("en-US", {maximumFractionDigits: 0});
+const COLS = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6"];
+
+function lineChart() {
+  const host = document.getElementById("c1"); host.innerHTML = "";
+  const lg = document.getElementById("lg1"); lg.innerHTML = "";
+  D.series.forEach((s, i) => { lg.insertAdjacentHTML("beforeend", `<span><i style="background:var(${COLS[i]})"></i>${s.label}</span>`); });
+  const W = Math.max(320, host.clientWidth), H = W < 520 ? 300 : 360, m = {l: 48, r: W < 520 ? 12 : 96, t: 12, b: 36};
+  const svg = el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Transactions per second by buffer pool size for six swap setups"}, host);
+  const xs = [14, 50], ymax = 2500;
+  const X = v => m.l + (v - xs[0]) / (xs[1] - xs[0]) * (W - m.l - m.r), Y = v => H - m.b - v / ymax * (H - m.t - m.b);
+  for (let v = 0; v <= ymax; v += 500) { el("line", {x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css("--grid")}, svg); const t = el("text", {x: m.l - 8, y: Y(v) + 4, "text-anchor": "end"}, svg); t.textContent = fmt(v); }
+  (W < 520 ? [16, 24, 32, 40, 48] : [16, 20, 24, 28, 32, 36, 40, 44, 48]).forEach(v => { const t = el("text", {x: X(v), y: H - m.b + 18, "text-anchor": "middle"}, svg); t.textContent = v; });
+  const xl = el("text", {x: (m.l + W - m.r) / 2, y: H - 4, "text-anchor": "middle"}, svg); xl.textContent = "buffer pool, GB (server RAM: 31 GB)";
+  const ramX = X(31); el("line", {x1: ramX, x2: ramX, y1: m.t, y2: H - m.b, stroke: css("--text-muted"), "stroke-dasharray": "3 4"}, svg);
+  const rt = el("text", {x: ramX + 4, y: m.t + 12}, svg); rt.textContent = "RAM";
+  D.series.forEach((s, i) => {
+    const c = css(COLS[i]);
+    el("path", {d: s.pts.map((p, j) => (j ? "L" : "M") + X(p[0]) + "," + Y(p[1])).join(""), fill: "none", stroke: c, "stroke-width": 2, "stroke-linejoin": "round"}, svg);
+    s.pts.forEach(p => el("circle", {cx: X(p[0]), cy: Y(p[1]), r: 4, fill: c, stroke: css("--surface-1"), "stroke-width": 2}, svg));
+    if (W >= 520 && i === 0) { const last = s.pts[s.pts.length - 1]; const t = el("text", {x: X(last[0]) + 8, y: Y(last[1]) + 4, class: "lbl"}, svg); t.textContent = s.label; }
+  });
+  const ov = el("rect", {x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent"}, svg);
+  const cross = el("line", {y1: m.t, y2: H - m.b, stroke: css("--text-muted"), opacity: 0}, svg);
+  const sizes = [...new Set(D.series.flatMap(s => s.pts.map(p => p[0])))].sort((a, b) => a - b);
+  ov.addEventListener("mousemove", ev => {
+    const r = svg.getBoundingClientRect(); const vx = (ev.clientX - r.left) * W / r.width;
+    const g = sizes.reduce((a, b) => Math.abs(X(b) - vx) < Math.abs(X(a) - vx) ? b : a);
+    cross.setAttribute("x1", X(g)); cross.setAttribute("x2", X(g)); cross.setAttribute("opacity", .5);
+    let h = `<b>${g} GB buffer pool</b>`;
+    D.series.forEach((s, i) => { const p = s.pts.find(p => p[0] === g); if (p) h += `<br><span style="color:var(${COLS[i]})">●</span> ${s.label}: ${fmt(p[1])} tps, p95 ${Math.round(p[2])} ms`; });
+    showTip(ev, h);
+  });
+  ov.addEventListener("mouseleave", () => { hideTip(); cross.setAttribute("opacity", 0); });
+}
+
+function surveyChart() {
+  const host = document.getElementById("c2"); host.innerHTML = "";
+  const W = Math.max(320, host.clientWidth), narrow = W < 560, lw = narrow ? 150 : 230, rh = 26, m = {t: 8, b: 28};
+  const H = m.t + m.b + D.survey.length * rh, xmax = 7;
+  const svg = el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "lz4 and zstd compression ratios of InnoDB pages per benchmark"}, host);
+  const X = v => lw + v / xmax * (W - lw - 40);
+  for (let v = 0; v <= xmax; v++) { el("line", {x1: X(v), x2: X(v), y1: m.t, y2: H - m.b, stroke: css("--grid")}, svg); const t = el("text", {x: X(v), y: H - m.b + 16, "text-anchor": "middle"}, svg); t.textContent = v + "×"; }
+  el("line", {x1: X(3), x2: X(3), y1: m.t, y2: H - m.b, stroke: css("--text-muted"), "stroke-dasharray": "4 4"}, svg);
+  D.survey.forEach((s, i) => {
+    const y = m.t + i * rh;
+    const t = el("text", {x: lw - 8, y: y + rh / 2 + 4, "text-anchor": "end", class: "lbl"}, svg); t.textContent = narrow && s.name.length > 22 ? s.name.slice(0, 21) + "…" : s.name;
+    if (s.ours) t.setAttribute("font-weight", "700");
+    [["lz4", "--s1", 0], ["zstd", "--s2", 1]].forEach(([k, c, j]) => {
+      const bh = 9, by = y + 4 + j * (bh + 2);
+      el("rect", {x: X(0), y: by, width: Math.max(2, X(s[k]) - X(0)), height: bh, rx: 2, fill: css(c)}, svg);
+    });
+    const v = el("text", {x: X(s.zstd) + 6, y: y + rh / 2 + 4, class: "val"}, svg); v.textContent = s.lz4.toFixed(2) + "× / " + s.zstd.toFixed(2) + "×";
+    const hit = el("rect", {x: 0, y, width: W, height: rh, fill: "transparent"}, svg);
+    hit.addEventListener("mousemove", ev => showTip(ev, `<b>${s.name}</b><br>lz4: ${s.lz4.toFixed(2)}×<br>zstd: ${s.zstd.toFixed(2)}×`));
+    hit.addEventListener("mouseleave", hideTip);
+  });
+}
+
+function latChart() {
+  const host = document.getElementById("c3"); host.innerHTML = "";
+  const W = Math.max(320, host.clientWidth), narrow = W < 560, lw = narrow ? 150 : 250, rh = 30, m = {t: 4, b: 28};
+  const H = m.t + m.b + D.lat.length * rh, lo = 1, hi = 10000;
+  const svg = el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Page fetch latency in microseconds, log scale"}, host);
+  const X = v => lw + Math.log10(v / lo) / Math.log10(hi / lo) * (W - lw - 70);
+  [1, 10, 100, 1000, 10000].forEach(v => { el("line", {x1: X(v), x2: X(v), y1: m.t, y2: H - m.b, stroke: css("--grid")}, svg); const t = el("text", {x: X(v), y: H - m.b + 16, "text-anchor": "middle"}, svg); t.textContent = fmt(v); });
+  D.lat.forEach((d, i) => {
+    const y = m.t + i * rh;
+    const t = el("text", {x: lw - 8, y: y + rh / 2 + 4, "text-anchor": "end", class: "lbl"}, svg); t.textContent = narrow && d.name.length > 22 ? d.name.slice(0, 21) + "…" : d.name;
+    el("rect", {x: X(lo), y: y + 7, width: X(d.us) - X(lo), height: rh - 14, rx: 3, fill: css(d.kind === "mem" ? "--s1" : "--s2")}, svg);
+    const v = el("text", {x: X(d.us) + 6, y: y + rh / 2 + 4, class: "val"}, svg); v.textContent = fmt(d.us) + " µs";
+    const hit = el("rect", {x: 0, y, width: W, height: rh, fill: "transparent"}, svg);
+    hit.addEventListener("mousemove", ev => showTip(ev, `<b>${d.name}</b><br>${fmt(d.us)} µs`));
+    hit.addEventListener("mouseleave", hideTip);
+  });
+}
+function draw() { lineChart(); surveyChart(); latChart(); }
+draw();
+let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(draw, 120); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+</script>
+</body>
+</html>
