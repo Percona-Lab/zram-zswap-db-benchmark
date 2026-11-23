@@ -12,9 +12,9 @@
 #             HammerDB's only ~1.3x: docs/research/zstudy/), 64 terminals, 5 min warm-up + 15 min measured; modes take a
 #             compressor suffix: zswap-lz4 zswap-zstd zram-lz4 zram-zstd (plain zswap / zram = lz4)
 # Runs outside the tuner (OOM kills are an expected outcome). Results: /root/bench/zstudy[-am]/results.jsonl
-# usage: zstudy.sh setup                      # move the host's datadir aside, fresh datadir, build 1000 W, pristine copy
+# usage: zstudy.sh setup                      # move the canary's datadir aside, fresh datadir, build 1000 W, pristine copy
 #        zstudy.sh run mode:bp[:tag] ...      # e.g. disk:24 zswap:32 zram:36:r2
-#        zstudy.sh teardown                   # swap back to the host's own, the host's datadir back, agent back
+#        zstudy.sh teardown                   # swap back to the host's own, the canary's datadir back, agent back
 set -u
 WL=${WL:-hdb}
 case $WL in
@@ -22,14 +22,16 @@ case $WL in
   sbz) O=/root/bench/zstudy-sbz; BASE=/data/zstudy_sbz_base ;;
   *)   O=/root/bench/zstudy;     BASE=/data/zstudy_base ;;
 esac
+BASE=${ZBASE:-$BASE}             # round 4: an alternative pristine copy (InnoDB-compressed tables, MyRocks)
 # WL=sbz (round 3): sysbench oltp_read_write with the patched oltp_common.lua (bench/sysbench-z: --data-random-pct=10,
 # pages ~3x lz4 / ~6x zstd), 16 x 16.5M rows (~60 GB), uniform, 64 threads, 15 min warm-up + 10 min measured
 SBZ="LUA_PATH='/root/bench/sysbench-z/?.lua;;' sysbench /root/bench/sysbench-z/oltp_read_write.lua --mysql-user=sbtest --mysql-password=sbtest --mysql-socket=/var/run/mysqld/mysqld.sock --mysql-db=sbtest --tables=16 --table-size=${SBZ_ROWS:-16500000} --data-random-pct=${SBZ_PCT:-10}"
 mkdir -p $O                       # BASE: pristine data set (other SSD than the datadir)
 AM_SF=${AM_SF:-300}               # AuctionMark scale factor: SF 5 loaded 1.66 GB (survey), so ~300 for ~100 GB
 CNF=/etc/mysql/mysql.conf.d/zzz-zstudy.cnf
-KEEP=/data/mysql.pre-zstudy       # the host's own datadir while the study runs
+KEEP=/data/mysql.pre-zstudy       # the canary's own datadir while the study runs
 ZSWF=/data/zstudy-swap.img        # zswap's backing swap file
+ZWBF=/data/zstudy-zram-wb.img     # zram writeback backing file (through a loop device)
 HDB="cd /opt/HammerDB-6.0 && LD_LIBRARY_PATH=/opt/mysqlclient TMP=/tmp"
 log() { echo "$(date -u +%FT%T) $*" | tee -a $O/study.log; }
 q() { mysql -N -e "$1"; }
@@ -46,6 +48,13 @@ innodb_redo_log_capacity = 8G
 innodb_io_capacity = 2000
 innodb_io_capacity_max = 4000
 EOF
+  case ${MODE_KIND:-} in
+    zfs)   # datadir on ZFS: the ARC caches (compressed) blocks, so no O_DIRECT; ZFS writes are atomic per record (CoW)
+           printf 'innodb_flush_method = fsync\ninnodb_doublewrite = OFF\n' >> $CNF ;;
+    rocks) # MyRocks: "bp" is the RocksDB block cache; InnoDB only holds the system tables
+           sed -i "s/^innodb_buffer_pool_size.*/innodb_buffer_pool_size = 1G/" $CNF
+           printf 'plugin-load-add = ha_rocksdb.so\nrocksdb_block_cache_size = %sG\nrocksdb_default_cf_options = %s\n' "$1" "${ROCKS_CF:-compression=kLZ4Compression;bottommost_compression=kLZ4Compression}" >> $CNF ;;
+  esac
 }
 
 setup() {
@@ -81,15 +90,18 @@ setup() {
 
 swap_mode() {  # mysqld must be down: swapoff brings every swapped page back
   systemctl stop mysql
+  [ -f /run/zstudy-wb.pid ] && { kill $(cat /run/zstudy-wb.pid) 2>/dev/null; rm -f /run/zstudy-wb.pid; }
   swapoff -a 2>/dev/null; [ -e /dev/zram0 ] && { swapoff /dev/zram0 2>/dev/null; echo 1 > /sys/block/zram0/reset; }
+  losetup -j $ZWBF 2>/dev/null | cut -d: -f1 | xargs -r -n1 losetup -d
   echo N > /sys/module/zswap/parameters/enabled
   # compressed modes: Arch wiki zram tuning (ChromeOS / Pop!_OS values): no swap read-ahead (page-cluster 0: buffer pool
   # pages come back one at a time at random), no watermark boost, earlier background reclaim; disk mode keeps the defaults
-  if [ ${1%%-*} = disk ]; then sysctl -q vm.page-cluster=3 vm.watermark_boost_factor=15000 vm.watermark_scale_factor=10
+  case ${1%%-*} in inno|zfs|rocks) MODE_KIND=${1%%-*} ;; *) MODE_KIND="" ;; esac
+  if [ ${1%%-*} = disk ] || [ -n "$MODE_KIND" ]; then sysctl -q vm.page-cluster=3 vm.watermark_boost_factor=15000 vm.watermark_scale_factor=10
   else sysctl -q vm.page-cluster=0 vm.watermark_boost_factor=0 vm.watermark_scale_factor=125; fi
   local kind=${1%%-*} comp=lz4; [ "$kind" != "$1" ] && comp=${1#*-}
   case $kind in
-    disk)  sysctl -q vm.swappiness=60; swapon /swapfile ;;
+    disk|inno|zfs|rocks)  sysctl -q vm.swappiness=60; swapon /swapfile ;;   # round 4: the host's own swap, no compression in the kernel
     zswap) sysctl -q vm.swappiness=100
            [ -e $ZSWF ] || { fallocate -l 64G $ZSWF && chmod 600 $ZSWF && mkswap -q $ZSWF; }
            echo $comp > /sys/module/zswap/parameters/compressor && echo zsmalloc > /sys/module/zswap/parameters/zpool \
@@ -98,6 +110,21 @@ swap_mode() {  # mysqld must be down: swapoff brings every swapped page back
     disk2) sysctl -q vm.swappiness=100   # control for zswap: the same swap file on the second SSD and sysctls, zswap off
            [ -e $ZSWF ] || { fallocate -l 64G $ZSWF && chmod 600 $ZSWF && mkswap -q $ZSWF; }
            swapon $ZSWF || { log "STUDYFAILED: disk2"; exit 1; } ;;
+    zramdisk|zramwb)   # zram (ZRAM_GB, priority 100) with the 2nd-SSD swap file as a lower-priority fallback (priority 10);
+           # zramwb also gives zram a backing device and writes pages idle for a minute to it (zram writeback), freeing
+           # zram for newer pages. Overflow never migrates by itself: without writeback zram keeps whatever filled it first
+           sysctl -q vm.swappiness=180; modprobe zram num_devices=1
+           [ -e $ZSWF ] || { fallocate -l 64G $ZSWF && chmod 600 $ZSWF && mkswap -q $ZSWF; }
+           if [ $kind = zramwb ]; then
+             [ -e $ZWBF ] || fallocate -l 48G $ZWBF
+             local lo; lo=$(losetup -f --show --direct-io=on $ZWBF) && echo $lo > /sys/block/zram0/backing_dev || { log "STUDYFAILED: zram backing_dev"; exit 1; }
+           fi
+           echo $comp > /sys/block/zram0/comp_algorithm && echo ${ZRAM_GB:-12}G > /sys/block/zram0/disksize && mkswap -q /dev/zram0 \
+             && swapon -p 100 /dev/zram0 && swapon -p 10 $ZSWF || { log "STUDYFAILED: $kind"; exit 1; }
+           if [ $kind = zramwb ]; then
+             ( while true; do echo idle > /sys/block/zram0/writeback 2>/dev/null; echo all > /sys/block/zram0/idle; sleep ${ZRAM_WB_SECS:-60}; done ) &
+             echo $! > /run/zstudy-wb.pid
+           fi ;;
     zram)  sysctl -q vm.swappiness=180; modprobe zram num_devices=1   # zswap stays off (it would cache in front of zram)
            echo $comp > /sys/block/zram0/comp_algorithm && echo ${ZRAM_GB:-64}G > /sys/block/zram0/disksize && mkswap -q /dev/zram0 \
              && swapon -p 100 /dev/zram0 || { log "STUDYFAILED: zram"; exit 1; } ;;
@@ -120,6 +147,12 @@ d = {"status": st(), "mem_avail_kb": mi["MemAvailable"], "swap_used_kb": mi["Swa
 try: d["zram_mm_stat"] = open('/sys/block/zram0/mm_stat').read().split()
 except Exception: pass
 try:
+    a = {l.split()[0]: int(l.split()[2]) for l in open('/proc/spl/kstat/zfs/arcstats').readlines()[2:]}
+    d["arc"] = {k: a[k] for k in ("size", "compressed_size", "uncompressed_size", "hits", "misses", "c_max") if k in a}
+except Exception: pass
+try: d["zram_bd_stat"] = open('/sys/block/zram0/bd_stat').read().split()   # pages on / read from / written to backing dev
+except Exception: pass
+try:
     pid = subprocess.run(["pidof","mysqld"],capture_output=True,text=True).stdout.split()[0]
     s = {l.split(':')[0]: l.split()[1] for l in open(f'/proc/{pid}/status') if l.startswith(('VmRSS','VmSwap'))}
     d["mysqld_rss_kb"], d["mysqld_swap_kb"] = int(s["VmRSS"]), int(s.get("VmSwap", 0))
@@ -133,7 +166,14 @@ point() {  # point <mode> <bp GB> [tag]
   id=$mode-$bp-$tag
   study_cnf $bp
   q "SET GLOBAL innodb_fast_shutdown = 2" 2>/dev/null; systemctl stop mysql
-  rsync -a --delete $BASE/ /var/lib/mysql/ || { log "STUDYFAILED: reset"; exit 1; }
+  if [ -n "${ZFS_DS:-}" ]; then   # ZFS: roll back to the pristine snapshot, export/import to empty the ARC, cap the ARC
+    mountpoint -q /var/lib/mysql && umount /var/lib/mysql
+    zfs rollback -r $ZFS_DS@pristine && zpool export ${ZFS_DS%%/*} && zpool import ${ZFS_DS%%/*} \
+      && mount --bind $(zfs get -H -o value mountpoint $ZFS_DS) /var/lib/mysql || { log "STUDYFAILED: zfs reset"; exit 1; }
+    echo $(( ${ZFS_ARC_GB:-16} * 1073741824 )) > /sys/module/zfs/parameters/zfs_arc_max
+  else
+    rsync -aS --delete $BASE/ /var/lib/mysql/ || { log "STUDYFAILED: reset"; exit 1; }
+  fi
   sync; echo 3 > /proc/sys/vm/drop_caches
   t0=$(date -u '+%F %T')
   if ! systemctl start mysql; then
@@ -152,7 +192,7 @@ point() {  # point <mode> <bp GB> [tag]
     ( eval "$HDB HDB_VU=64 HDB_ALLWH=true HDB_RAMPUP=5 HDB_DURATION=15 ./hammerdbcli auto /root/bench/hdb_run.tcl" ) > $O/hdb-$id.log 2>&1
   fi
   snap > $O/snap1-$id.json
-  kill $vm $io $s0 2>/dev/null; cp /tmp/hdbxtprofile.log $O/prof-$id.log 2>/dev/null
+  kill $vm $io $s0 2>/dev/null; [ $WL = hdb ] && cp /tmp/hdbxtprofile.log $O/prof-$id.log 2>/dev/null
   local oom; oom=$(journalctl -k --since "$t0" --no-pager 2>/dev/null | grep -ciE "out of memory: killed process [0-9]+ \(mysqld\)|oom-kill.*mysqld")
   WARM=$warm WINDOW=$([ $WL = sbz ] && echo 600 || echo 900) python3 /root/bench/bm2/zstudy_point.py "$O" "$id" "$mode" "$bp" "$oom" >> $O/results.jsonl
   log "$id: $(tail -1 $O/results.jsonl)"
@@ -170,7 +210,9 @@ case ${1:-} in
        done; log "RUNDONE $*" ;;
   teardown)
        rm -f $CNF /etc/mysql/mysql.conf.d/zzzz-zstudy-build.cnf; systemctl stop mysql
+       [ -f /run/zstudy-wb.pid ] && { kill $(cat /run/zstudy-wb.pid) 2>/dev/null; rm -f /run/zstudy-wb.pid; }
        swapoff -a 2>/dev/null; [ -e /dev/zram0 ] && { swapoff /dev/zram0 2>/dev/null; echo 1 > /sys/block/zram0/reset; rmmod zram; }
+       losetup -j $ZWBF 2>/dev/null | cut -d: -f1 | xargs -r -n1 losetup -d; rm -f $ZWBF
        echo N > /sys/module/zswap/parameters/enabled; echo lzo > /sys/module/zswap/parameters/compressor
        echo zbud > /sys/module/zswap/parameters/zpool; echo 20 > /sys/module/zswap/parameters/max_pool_percent
        sysctl -q vm.swappiness=60 vm.page-cluster=3 vm.watermark_boost_factor=15000 vm.watermark_scale_factor=10; rm -f $ZSWF; swapon -a
