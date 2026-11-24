@@ -69,9 +69,16 @@ summary { cursor: pointer; color: var(--text-secondary); font-size: 14px; }
 table { border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; margin: 8px 0; min-width: 100%; }
 th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
 th:first-child, td:first-child { text-align: left; }
+table.lt th, table.lt td { text-align: left; white-space: normal; }
 th { color: var(--text-secondary); font-weight: 600; }
 .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 4px; font-size: 13px; }
+.flow .b { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--bg); color: var(--text-primary); }
+.flow .b.hl { border-color: var(--s1); }
+.flow .a { color: var(--text-muted); }
+pre { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+code { font-size: 0.92em; }
 footer { margin-top: 56px; font-size: 13px; color: var(--text-muted); border-top: 1px solid var(--border); padding-top: 16px; }
 </style>
 </head>
@@ -191,6 +198,93 @@ file throughout. Compare with normal swap at 26 GB (@BASE@ tps) and zram lz4 at 
   <li>Same server settings for every run; only the buffer pool size and swap setup change. Data restored before every run; clients on the same server.</li>
   <li>zram: no disk swap, zswap off, priority 100. zswap: zsmalloc, max_pool_percent 50, 64 GB swap file on the second SSD. Compressed modes use <code>vm.page-cluster=0</code>, <code>vm.watermark_boost_factor=0</code>, <code>vm.watermark_scale_factor=125</code>, swappiness 180 (zram) / 100 (zswap).</li>
 </ul>
+
+<h2>Appendix A: how zram and zswap work</h2>
+<p>Both keep swapped-out memory compressed in RAM. They differ in where they sit in the swap path and in what happens when the compressed memory fills up.</p>
+<div class="cols">
+  <div class="card"><h3>zram: a compressed RAM disk used as a swap device</h3>
+    <div class="flow"><span class="b">InnoDB page (anonymous memory)</span><span class="a">→ swap-out →</span><span class="b hl">/dev/zram0 (compressed RAM)</span><span class="a">→ full →</span><span class="b">next swap device by priority, or OOM</span></div>
+    <ul class="findings">
+      <li>A block device whose storage is compressed RAM; you <code>mkswap</code> / <code>swapon</code> it like a disk.</li>
+      <li>No disk behind it. <code>disksize</code> is the uncompressed capacity; RAM is used only as pages arrive (compressed size + overhead).</li>
+      <li>The kernel picks swap devices by priority and <em>free slots</em>, not by RAM: zram falls back to a lower-priority swap device only when its <code>disksize</code> is full. So <code>disksize</code> is zram's memory budget (≈ disksize ÷ compression ratio). Without a fallback, a full device or exhausted RAM means the OOM killer.</li>
+      <li>Pages never move from zram to the fallback on their own; optional writeback (<code>backing_dev</code>, <code>idle</code>, <code>writeback</code>) moves idle pages when triggered.</li>
+      <li>Incompressible pages are stored as they are and still use RAM.</li>
+    </ul></div>
+  <div class="card"><h3>zswap: a compressed cache in front of disk swap</h3>
+    <div class="flow"><span class="b">InnoDB page</span><span class="a">→ swap-out →</span><span class="b hl">zswap pool (compressed RAM)</span><span class="a">→ pool full / cold / incompressible →</span><span class="b">swap file on disk</span></div>
+    <ul class="findings">
+      <li>Not a device: it intercepts pages on their way to a real swap device and keeps them compressed in RAM. It needs that swap device.</li>
+      <li>The pool is capped at <code>max_pool_percent</code> of RAM. Pages that do not compress well enough (<code>accept_threshold_percent</code>) go straight to disk.</li>
+      <li>Older pages are written back, decompressed, to the swap device when the pool fills, and proactively by the zswap shrinker (on by default in kernel 6.8). A miss is a disk read.</li>
+      <li>Degrades gradually instead of failing: worst case it behaves like disk swap.</li>
+    </ul></div>
+</div>
+<div class="card"><div class="tw"><table class="lt">
+  <tr><th></th><th>zram</th><th>zswap</th></tr>
+  <tr><td>What it is</td><td>swap device made of compressed RAM</td><td>compressed cache on top of a disk swap device</td></tr>
+  <tr><td>Needs disk swap</td><td>no (optional lower-priority fallback)</td><td>yes</td></tr>
+  <tr><td>Memory budget</td><td><code>disksize</code> (uncompressed) and RAM</td><td><code>max_pool_percent</code> of RAM (compressed)</td></tr>
+  <tr><td>When full</td><td>next swap device, else OOM</td><td>oldest pages written back to disk</td></tr>
+  <tr><td>Incompressible pages</td><td>kept in RAM uncompressed</td><td>sent to disk</td></tr>
+  <tr><td>Use together</td><td colspan="2">not usually: zswap would cache in front of zram; turn zswap off when using zram</td></tr>
+</table></div></div>
+
+<h2>Appendix B: configuration used</h2>
+<p>Ubuntu 24.04, kernel 6.8.0-151 (stock zswap defaults before the study: off, lzo, zbud, 20%). Exact commands from
+<a href="https://github.com/Percona-Lab/zram-zswap-db-benchmark/blob/main/scripts/zstudy.sh">scripts/zstudy.sh</a>; mysqld is stopped before every change (swapoff has to bring swapped pages back).</p>
+<h3>MySQL (Percona Server 8.4.11), every run</h3>
+<pre>[mysqld]
+disable_log_bin
+max_connections = 300
+innodb_buffer_pool_size = &lt;varied&gt;
+innodb_buffer_pool_instances = 8
+innodb_buffer_pool_load_at_startup = OFF
+innodb_buffer_pool_dump_at_shutdown = OFF
+innodb_redo_log_capacity = 8G
+innodb_io_capacity = 2000
+innodb_io_capacity_max = 4000
+# innodb_flush_method: default O_DIRECT (ZFS runs: fsync, innodb_doublewrite = OFF)</pre>
+<h3>Kernel settings</h3>
+<pre># normal swap ("disk"): kernel defaults
+vm.swappiness = 60   vm.page-cluster = 3   vm.watermark_boost_factor = 15000   vm.watermark_scale_factor = 10
+
+# all compressed modes and the 2nd-SSD swap file ("disk2"): zram tuning from the Arch Linux wiki
+vm.page-cluster = 0  vm.watermark_boost_factor = 0  vm.watermark_scale_factor = 125
+vm.swappiness = 180  # zram modes
+vm.swappiness = 100  # zswap, disk2</pre>
+<h3>Swap modes</h3>
+<pre># disk: the host's own 8 GB swap file on the datadir SSD
+swapon /swapfile
+
+# disk2: swap file on the second SSD, no compression
+fallocate -l 64G /data/zstudy-swap.img; chmod 600 /data/zstudy-swap.img; mkswap /data/zstudy-swap.img
+swapon /data/zstudy-swap.img
+
+# zswap (lz4 or zstd) in front of the same swap file
+echo lz4      &gt; /sys/module/zswap/parameters/compressor        # or zstd
+echo zsmalloc &gt; /sys/module/zswap/parameters/zpool
+echo 50       &gt; /sys/module/zswap/parameters/max_pool_percent  # 80 and 12 in follow-ups, 32 in round 5
+echo Y        &gt; /sys/module/zswap/parameters/enabled
+swapon /data/zstudy-swap.img
+# defaults kept: accept_threshold_percent 90, shrinker_enabled Y, same_filled_pages_enabled Y
+
+# zram (lz4 or zstd), no disk swap, zswap off
+echo N &gt; /sys/module/zswap/parameters/enabled
+modprobe zram num_devices=1
+echo lz4 &gt; /sys/block/zram0/comp_algorithm   # or zstd
+echo 64G &gt; /sys/block/zram0/disksize         # 32G in round 1, 128G in round 5
+mkswap /dev/zram0; swapon -p 100 /dev/zram0
+
+# zram + lower-priority disk fallback
+echo 12G &gt; /sys/block/zram0/disksize         # 32G in round 5 (~10 GB RAM at ~3.3x)
+mkswap /dev/zram0; swapon -p 100 /dev/zram0
+swapon -p 10 /data/zstudy-swap.img
+
+# zram writeback: a backing device set before disksize, idle pages written out every minute
+losetup -f --show --direct-io=on /data/zstudy-zram-wb.img      # -&gt; /dev/loopN
+echo /dev/loopN &gt; /sys/block/zram0/backing_dev
+while true; do echo idle &gt; /sys/block/zram0/writeback; echo all &gt; /sys/block/zram0/idle; sleep 60; done</pre>
 
 <footer>Percona Lab · <a href="https://github.com/Percona-Lab/zram-zswap-db-benchmark">source, scripts and raw data</a> ·
 <a href="https://github.com/Percona-Lab/sysbench-compressible">sysbench-compressible</a> · results and text CC BY 4.0, code Apache 2.0.
