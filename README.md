@@ -241,6 +241,29 @@ zram with a lower-priority disk swap works as a safety net (no OOM, still +77-10
 with the same compressed size; writeback did not help on this uniform workload (it moved ~1.9 GB to disk and read pages
 back about as fast as it wrote them).
 
+## Round 4: other ways to compress (same 40 GB data and workload)
+
+Raw rows: `data/sysbench-z40-results.jsonl` (modes `inno-*`, `zfs-*`, `rocks-*`); orchestration `scripts/round4.sh`.
+Kernel swap is the host's normal 8 GB file. Reference: normal swap 26 GB 882 tps; zram lz4 40 GB 2,286 tps.
+
+| Setup | Memory | tps | p95 ms |
+|---|---|---|---|
+| InnoDB ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8 (zlib level 6) | 16 / 24 / 26 GB pool | 335 / 712 / 661 | 451 / 215 / 240 |
+| InnoDB ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=4 | 16 / 24 / 26 GB pool | 573 / 670 / 650 | 332 / 282 / 282 |
+| InnoDB page compression COMPRESSION='lz4' | 26 GB pool | 328 | 435 |
+| ZFS lz4 (16K records, 1.93x) | pool + ARC 8+18 / 12+14 / 16+10 / 24+4 GB | 578 / 376 / 280 / 318 | 183 / 357 / 467 / 405 |
+| ZFS zstd (3.4-3.7x) | 8+18 / 12+14 / 16+10 GB | 496 / 538 / 382 | 320 / 282 / 326 |
+| MyRocks lz4 (12 GB on disk) | 8 / 16 / 24 GB block cache | 1,888 / 1,940 / 1,442 | 49 / 47 / 55 |
+| MyRocks zstd (6.7 GB on disk) | 8 / 16 / 24 GB block cache | 1,513 / 1,540 / 1,536 | 60 / 60 / 58 |
+
+Findings: InnoDB table compression fits the data in the pool (misses 0.03-0.08% at 24-26 GB) but is write-bound
+(compressed page images in the redo log, recompression), below uncompressed InnoDB. Page compression saves disk only.
+ZFS: compressed 16K records are stored in whole 4K sectors, so lz4 gets 1.93x (zram 3.3x) and stays I/O-bound; zstd
+fits but is CPU-bound (ARC hits decompress again); ZFS itself was slower than ext4 here (24 GB pool: 318 vs 794 tps).
+MyRocks lz4 is the only alternative close to zram (85%, same p95): compressed files stay in the page cache; a block
+cache too large crowds them out. Some InnoDB-compression and ZFS runs were not fully settled after the warm-up
+(`warm_tail_vs_window_pct` > 10%).
+
 ## Page compression and decompression time vs storage latency
 
 `tools/pagecodec_bench.c`: 50,000 real 4 KiB pieces of the round-3 data (`--data-random-pct=10`), one core of the

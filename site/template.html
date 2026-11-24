@@ -165,7 +165,7 @@ one core) with real pages; storage figures are typical values except the last, m
   <div class="tw"><table><tr><th>Run</th><th>tps</th><th>vs baseline</th><th>p95 ms</th></tr>@EXTRAROWS@</table></div>
 </div>
 
-<h2>Other ways to compress (round 4, in progress)</h2>
+<h2>Other ways to compress (round 4)</h2>
 <p>The same 40 GB compressible data set and workload, compressing somewhere else: inside InnoDB, in the file system (ZFS keeps
 its read cache, the ARC, compressed), or with a compressing storage engine (MyRocks). Kernel swap is the host's normal 8 GB
 file throughout. Compare with normal swap at 26 GB (@BASE@ tps) and zram lz4 at 40 GB (@BEST@ tps).</p>
@@ -175,14 +175,14 @@ file throughout. Compare with normal swap at 26 GB (@BASE@ tps) and zram lz4 at 
   <ul class="findings">
     <li><strong>InnoDB table compression (zlib) fits the data in the buffer pool but is slower than no compression</strong>: at 24–26 GB almost every read hits the pool (misses 0.03–0.08%), yet throughput stays at 650–710 tps. The time goes to writes: compressed tables log compressed page images to the redo log and write 3.7–4.6k pages/s, and pages are recompressed when changes no longer fit.</li>
     <li><strong>ZFS is slower than plain InnoDB in every configuration</strong> (280–578 tps). With 16K records on 4K sectors, a compressed record is stored in whole sectors, so lz4 reaches only 1.93× on this data (zram: 3.3×): the data does not fit in the ARC and reads stay on disk. zstd reaches 3.4–3.7× and serves 92–95% of the buffer pool's misses from the ARC, but runs out of CPU (56–61% kernel CPU): every ARC hit decompresses a 16K record again. ZFS itself also costs: with a normal 24 GB pool and a small 4 GB ARC it ran at 318 tps where ext4 ran at 794.</li>
+    <li><strong>MyRocks with lz4 comes closest to zram</strong>: 1,940 tps with a 16 GB block cache (85% of zram's 2,286, same p95), the only alternative that does. Its data is 12 GB on disk (InnoDB: ~49 GB) and stays entirely in the Linux page cache, so there are no disk reads. A larger block cache hurts (24 GB: 1,442 tps, 19.5k reads/s) because uncompressed cache crowds the compressed files out of the page cache. zstd (6.7 GB on disk) is ~20% slower and CPU-bound. MyRocks uses more CPU per transaction than InnoDB (50–65% vs 42% per 1k tps), and it is a different engine, not a drop-in setting.</li>
     <li><strong>InnoDB page compression (lz4) saves disk (21 GB instead of ~49 GB) but halves throughput here</strong> (328 tps): the buffer pool holds uncompressed pages, so it is as read-bound as plain InnoDB, plus the cost of sparse files on every page write.</li>
   </ul>
 </div>
 
 <h2>Coming next</h2>
 <ul class="findings">
-  <li><strong>Other ways to compress</strong> (running): InnoDB table compression (zlib, KEY_BLOCK_SIZE 8 and 4), InnoDB page compression, ZFS with compressed ARC (lz4, zstd), MyRocks (lz4, zstd).</li>
-  <li><strong>Data size sweep</strong> (queued): 36 → 75 GB of the same compressible data. zram alone vs zram + lower-priority swap vs zswap + swap (same ~10 GB compressed budget) vs swap alone vs normal swap: does zram + swap match zram while the data fits compressed and degrade instead of OOM when it doesn't?</li>
+  <li><strong>Data size sweep</strong> (running, results ~06:00 UTC Nov 25): 36 → 75 GB of the same compressible data. zram alone vs zram + lower-priority swap vs zswap + swap (same ~10 GB compressed budget) vs swap alone vs normal swap: does zram + swap match zram while the data fits compressed and degrade instead of OOM when it doesn't?</li>
 </ul>
 
 <h2>Setup</h2>
