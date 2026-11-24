@@ -165,6 +165,19 @@ one core) with real pages; storage figures are typical values except the last, m
   <div class="tw"><table><tr><th>Run</th><th>tps</th><th>vs baseline</th><th>p95 ms</th></tr>@EXTRAROWS@</table></div>
 </div>
 
+<h2>Other ways to compress (round 4, in progress)</h2>
+<p>The same 40 GB compressible data set and workload, compressing somewhere else: inside InnoDB, in the file system (ZFS keeps
+its read cache, the ARC, compressed), or with a compressing storage engine (MyRocks). Kernel swap is the host's normal 8 GB
+file throughout. Compare with normal swap at 26 GB (@BASE@ tps) and zram lz4 at 40 GB (@BEST@ tps).</p>
+<div class="card">
+  <div class="tw"><table><tr><th>Setup</th><th>Memory</th><th>tps</th><th>vs normal swap 26 GB</th><th>p95 ms</th><th>iowait %</th></tr>@R4ROWS@</table></div>
+  <p class="note">† throughput in the last part of the warm-up differed from the measured window by more than 10%: not fully settled.</p>
+  <ul class="findings">
+    <li><strong>InnoDB table compression (zlib) fits the data in the buffer pool but is slower than no compression</strong>: at 24–26 GB almost every read hits the pool (misses 0.03–0.08%), yet throughput stays at 650–710 tps. The time goes to writes: compressed tables log compressed page images to the redo log and write 3.7–4.6k pages/s, and pages are recompressed when changes no longer fit.</li>
+    <li><strong>InnoDB page compression (lz4) saves disk (21 GB instead of ~49 GB) but halves throughput here</strong> (328 tps): the buffer pool holds uncompressed pages, so it is as read-bound as plain InnoDB, plus the cost of sparse files on every page write.</li>
+  </ul>
+</div>
+
 <h2>Coming next</h2>
 <ul class="findings">
   <li><strong>Other ways to compress</strong> (running): InnoDB table compression (zlib, KEY_BLOCK_SIZE 8 and 4), InnoDB page compression, ZFS with compressed ARC (lz4, zstd), MyRocks (lz4, zstd).</li>

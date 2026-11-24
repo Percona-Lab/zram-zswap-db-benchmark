@@ -165,6 +165,19 @@ one core) with real pages; storage figures are typical values except the last, m
   <div class="tw"><table><tr><th>Run</th><th>tps</th><th>vs baseline</th><th>p95 ms</th></tr><tr><td>zswap-lz4-40-p80</td><td>1,710</td><td>+94%</td><td>81.48</td></tr><tr><td>zswap-lz4-44-p80</td><td>1,833</td><td>+108%</td><td>66.84</td></tr><tr><td>zramdisk-lz4-40-r1</td><td>1,566</td><td>+78%</td><td>99.33</td></tr><tr><td>zramdisk-lz4-44-r1</td><td>1,804</td><td>+105%</td><td>77.19</td></tr><tr><td>zramwb-lz4-40-r1</td><td>1,536</td><td>+74%</td><td>94.1</td></tr><tr><td>zramwb-lz4-44-r1</td><td>1,772</td><td>+101%</td><td>81.48</td></tr><tr><td>zswap-lz4-40-p12</td><td>1,353</td><td>+53%</td><td>75.82</td></tr><tr><td>zswap-lz4-44-p12</td><td>1,322</td><td>+50%</td><td>81.48</td></tr></table></div>
 </div>
 
+<h2>Other ways to compress (round 4, in progress)</h2>
+<p>The same 40 GB compressible data set and workload, compressing somewhere else: inside InnoDB, in the file system (ZFS keeps
+its read cache, the ARC, compressed), or with a compressing storage engine (MyRocks). Kernel swap is the host's normal 8 GB
+file throughout. Compare with normal swap at 26 GB (882 tps) and zram lz4 at 40 GB (2,286 tps).</p>
+<div class="card">
+  <div class="tw"><table><tr><th>Setup</th><th>Memory</th><th>tps</th><th>vs normal swap 26 GB</th><th>p95 ms</th><th>iowait %</th></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=8 (zlib)</td><td>16 GB pool</td><td>335 †</td><td>-62%</td><td>451</td><td>68.3</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=8 (zlib)</td><td>24 GB pool</td><td>712 †</td><td>-19%</td><td>215</td><td>21.4</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=8 (zlib)</td><td>26 GB pool</td><td>661</td><td>-25%</td><td>240</td><td>21.9</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=4 (zlib)</td><td>16 GB pool</td><td>573 †</td><td>-35%</td><td>332</td><td>26.0</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=4 (zlib)</td><td>24 GB pool</td><td>670 †</td><td>-24%</td><td>282</td><td>23.9</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=4 (zlib)</td><td>26 GB pool</td><td>650</td><td>-26%</td><td>282</td><td>24.1</td></tr><tr><td>InnoDB page compression, COMPRESSION=&#x27;lz4&#x27;</td><td>26 GB pool</td><td>328 †</td><td>-63%</td><td>435</td><td>79.8</td></tr></table></div>
+  <p class="note">† throughput in the last part of the warm-up differed from the measured window by more than 10%: not fully settled.</p>
+  <ul class="findings">
+    <li><strong>InnoDB table compression (zlib) fits the data in the buffer pool but is slower than no compression</strong>: at 24–26 GB almost every read hits the pool (misses 0.03–0.08%), yet throughput stays at 650–710 tps. The time goes to writes: compressed tables log compressed page images to the redo log and write 3.7–4.6k pages/s, and pages are recompressed when changes no longer fit.</li>
+    <li><strong>InnoDB page compression (lz4) saves disk (21 GB instead of ~49 GB) but halves throughput here</strong> (328 tps): the buffer pool holds uncompressed pages, so it is as read-bound as plain InnoDB, plus the cost of sparse files on every page write.</li>
+  </ul>
+</div>
+
 <h2>Coming next</h2>
 <ul class="findings">
   <li><strong>Other ways to compress</strong> (running): InnoDB table compression (zlib, KEY_BLOCK_SIZE 8 and 4), InnoDB page compression, ZFS with compressed ARC (lz4, zstd), MyRocks (lz4, zstd).</li>

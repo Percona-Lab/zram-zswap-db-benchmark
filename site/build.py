@@ -50,7 +50,19 @@ r3table = "".join(f"<tr><td>{html.escape(lbl)}</td>" + "".join(f"<td>{next((f'{t
                   for s, (_, lbl) in zip(series, MODES))
 svtable = "".join(f"<tr><td>{html.escape(s['name'])}</td><td>{s['lz4']:.2f}</td><td>{s['zstd']:.2f}</td></tr>" for s in sv)
 
+R4 = {"inno-kbs8": "InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=8 (zlib)", "inno-kbs4": "InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=4 (zlib)",
+      "inno-pclz4": "InnoDB page compression, COMPRESSION='lz4'", "zfs-lz4": "ZFS lz4, compressed ARC", "zfs-zstd": "ZFS zstd, compressed ARC",
+      "rocks-lz4": "MyRocks lz4", "rocks-zstd": "MyRocks zstd"}
+def r4row(r):
+    mem = f"{r['bp_gb']:.0f} GB pool" if not r["mode"].startswith("rocks") else f"{r['bp_gb']:.0f} GB block cache"
+    if r["mode"].startswith("zfs"): mem += " + " + r["id"].split("-")[-1].replace("arc", "") + " GB ARC"
+    wt = r.get("warm_tail_vs_window_pct")
+    flag = " †" if wt is not None and abs(wt) > 10 else ""
+    return (f"<tr><td>{html.escape(R4[r['mode']])}</td><td>{mem}</td><td>{r['tps']:,.0f}{flag}</td><td>{pct(r['tps'])}</td>"
+            f"<td>{r.get('p95_ms', 0):.0f}</td><td>{r.get('cpu_wa', '')}</td></tr>")
+r4rows = "".join(r4row(r) for r in r3 if r["mode"] in R4 and r.get("tps")) or "<tr><td colspan=6>running</td></tr>"
 page = open(os.path.join(R, "site", "template.html")).read()
+page = page.replace("@R4ROWS@", r4rows)
 for k, v in {"@DATA@": DATA, "@BASE@": f"{base:,.0f}", "@BEST@": f"{best['tps']:,.0f}", "@BESTPCT@": pct(best["tps"]),
              "@BESTP95@": f"{best['p95_ms']:.0f}", "@BASEP95@": f"{next(r['p95_ms'] for r in r3 if r['id']=='disk-26-r1'):.0f}",
              "@REPROWS@": reprows, "@EXTRAROWS@": extrarows or "<tr><td colspan=4>running</td></tr>",
