@@ -174,6 +174,7 @@ file throughout. Compare with normal swap at 26 GB (@BASE@ tps) and zram lz4 at 
   <p class="note">† throughput in the last part of the warm-up differed from the measured window by more than 10%: not fully settled.</p>
   <ul class="findings">
     <li><strong>InnoDB table compression (zlib) fits the data in the buffer pool but is slower than no compression</strong>: at 24–26 GB almost every read hits the pool (misses 0.03–0.08%), yet throughput stays at 650–710 tps. The time goes to writes: compressed tables log compressed page images to the redo log and write 3.7–4.6k pages/s, and pages are recompressed when changes no longer fit.</li>
+    <li><strong>ZFS is slower than plain InnoDB in every configuration</strong> (280–578 tps). With 16K records on 4K sectors, a compressed record is stored in whole sectors, so lz4 reaches only 1.93× on this data (zram: 3.3×): the data does not fit in the ARC and reads stay on disk. zstd reaches 3.4–3.7× and serves 92–95% of the buffer pool's misses from the ARC, but runs out of CPU (56–61% kernel CPU): every ARC hit decompresses a 16K record again. ZFS itself also costs: with a normal 24 GB pool and a small 4 GB ARC it ran at 318 tps where ext4 ran at 794.</li>
     <li><strong>InnoDB page compression (lz4) saves disk (21 GB instead of ~49 GB) but halves throughput here</strong> (328 tps): the buffer pool holds uncompressed pages, so it is as read-bound as plain InnoDB, plus the cost of sparse files on every page write.</li>
   </ul>
 </div>
