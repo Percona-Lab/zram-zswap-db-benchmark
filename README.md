@@ -256,8 +256,12 @@ Kernel swap is the host's normal 8 GB file. Reference: normal swap 26 GB 882 tps
 | MyRocks lz4 (12 GB on disk) | 8 / 16 / 24 GB block cache | 1,888 / 1,940 / 1,442 | 49 / 47 / 55 |
 | MyRocks zstd (6.7 GB on disk) | 8 / 16 / 24 GB block cache | 1,513 / 1,540 / 1,536 | 60 / 60 / 58 |
 
-Findings: InnoDB table compression fits the data in the pool (misses 0.03-0.08% at 24-26 GB) but is write-bound
-(compressed page images in the redo log, recompression), below uncompressed InnoDB. Page compression saves disk only.
+Correction (round 6, 2026-11-25): the InnoDB-compression and page-compression runs above were measured while the datadir
+SSD was abnormally slow to write (~11 ms per write at ~1,000 writes/s, 84-89% busy; round 6: ~2.2 ms at ~3,700/s,
+~50% busy; likely the SSD's internal state after many full rewrites since the last TRIM). Round 6: KEY_BLOCK_SIZE=8 at
+24 / 26 GB = 1,386 / 1,454 tps at zlib level 1 and 1,461 tps at level 6 (repeat of 712): table compression is +65% over
+uncompressed InnoDB, CPU-bound, and the zlib level made no difference. Page compression saves disk only (its throughput
+is not reliable).
 ZFS: compressed 16K records are stored in whole 4K sectors, so lz4 gets 1.93x (zram 3.3x) and stays I/O-bound; zstd
 fits but is CPU-bound (ARC hits decompress again); ZFS itself was slower than ext4 here (24 GB pool: 318 vs 794 tps).
 MyRocks lz4 is the only alternative close to zram (85%, same p95): compressed files stay in the page cache; a block

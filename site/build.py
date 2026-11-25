@@ -72,7 +72,9 @@ def r4row(r):
     if r["mode"].startswith("zfs"): mem += " + " + r["id"].split("-")[-1].replace("arc", "") + " GB ARC"
     wt = r.get("warm_tail_vs_window_pct")
     flag = " †" if wt is not None and abs(wt) > 10 else ""
-    return (f"<tr><td>{html.escape(R4[r['mode']])}</td><td>{mem}</td><td>{r['tps']:,.0f}{flag}</td><td>{pct(r['tps'])}</td>"
+    if r["mode"].startswith("inno-") and r["id"].endswith("-r1"): flag += " ‡"
+    name = R4[r["mode"]] + (" — zlib level 1 (round 6)" if r["id"].endswith("-L1") else " — repeat (round 6)" if r["id"].endswith("-r2") else "")
+    return (f"<tr><td>{html.escape(name)}</td><td>{mem}</td><td>{r['tps']:,.0f}{flag}</td><td>{pct(r['tps'])}</td>"
             f"<td>{r.get('p95_ms', 0):.0f}</td><td>{r.get('cpu_wa', '')}</td></tr>")
 r4rows = "".join(r4row(r) for r in r3 if r["mode"] in R4 and r.get("tps")) or "<tr><td colspan=6>running</td></tr>"
 page = open(os.path.join(R, "site", "template.html")).read()
