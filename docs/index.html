@@ -211,6 +211,7 @@ zram alone has a 128 GB device: no budget. Numbers are not directly comparable w
   <details><summary>Table view (tps; † not fully settled after the warm-up)</summary><div class="tw"><table>
     <tr><th>Setup</th><th>36 GB</th><th>48 GB</th><th>60 GB</th><th>74 GB</th></tr><tr><td>zram alone</td><td>2,174</td><td>1,542</td><td>1,337</td><td>594 †</td></tr><tr><td>zram + swap (~10 GB zram budget)</td><td>2,225</td><td>1,242</td><td>600 †</td><td>313 †</td></tr><tr><td>zswap + swap (~10 GB pool)</td><td>1,492</td><td>868</td><td>401</td><td>326 †</td></tr><tr><td>swap file alone</td><td>1,420</td><td>594 †</td><td>413</td><td>351</td></tr><tr><td>normal swap, 26 GB pool</td><td>774</td><td>506</td><td>430</td><td>375</td></tr></table></div></details>
 </div>
+<p class="note">Repeats at 48 GB (fresh load, SSDs trimmed first): normal swap 506 → 522 tps, swap file 594 → 685 (the first run had not settled), zram alone 1,542 → 1,539, zram + swap 1,242 → 1,219, zswap + swap 868 → 912: all within 0–5% except the unsettled run.</p>
 <ul class="findings">
   <li><strong>While the data fits in the zram budget, zram + swap matches zram alone</strong> (36 GB: 2,225 vs 2,175 tps) without touching the disk, and beats zswap with the same budget by ~50%.</li>
   <li><strong>Past the budget, zram + swap degrades instead of failing</strong>, but it sends the overflow to disk even while RAM is free: its fixed ~10 GB budget was too small for this server, so zram alone (no budget) stayed ahead up to 60 GB. Size zram's <code>disksize</code> to the RAM you can actually give it (≈ RAM left after the pool's resident part × ratio).</li>
@@ -234,7 +235,7 @@ as huge pages (unusable by MySQL), leaving ~6 GB available. Lower is better.</p>
 
 <h2>Coming next</h2>
 <ul class="findings">
-  <li><strong>Repeats of round 5 at 48 GB</strong> (running, ~19:30 UTC Nov 25; the first attempt hit leftover MyRocks tables and produced no data). So far: normal swap 522 tps (first run 506), swap file alone 685 (first run 594, which had not settled).</li>
+  <li><strong>zswap with its shrinker off</strong> (running, ~01:00 UTC Nov 26): at 40 GB against zram and default zswap in the same session, and at 48 GB with the RAM the box can spare (pool 50% / 80%, and zram + swap with a 64 GB device).</li>
 </ul>
 
 <h2>Setup</h2>
