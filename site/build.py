@@ -77,12 +77,15 @@ def r4row(r):
     return (f"<tr><td>{html.escape(name)}</td><td>{mem}</td><td>{r['tps']:,.0f}{flag}</td><td>{pct(r['tps'])}</td>"
             f"<td>{r.get('p95_ms', 0):.0f}</td><td>{r.get('cpu_wa', '')}</td></tr>")
 r4rows = "".join(r4row(r) for r in r3 if r["mode"] in R4 and r.get("tps")) or "<tr><td colspan=6>running</td></tr>"
+JOBN = {"disk": "normal swap", "disk2": "swap file on 2nd SSD", "zram": "zram lz4", "zram-zstd": "zram zstd", "zswap-lz4": "zswap lz4 (pool 15%)"}
+jrows = "".join(f"<tr><td>{JOBN.get(r['mode'], r['mode'])}</td><td>{r['bp_gb']:.0f} GB</td><td>{r['job_total_s']:,.0f}</td><td>{r['job_geomean_s']:.2f}</td><td>{r['job_capped']}</td><td>{r.get('data_reads_s', '')}</td></tr>"
+                for r in rows("job-imdb-results.jsonl") if r.get("job_total_s")) if os.path.exists(os.path.join(R, "data", "job-imdb-results.jsonl")) else ""
 page = open(os.path.join(R, "site", "template.html")).read()
 page = page.replace("@R4ROWS@", r4rows)
 for k, v in {"@DATA@": DATA, "@BASE@": f"{base:,.0f}", "@BEST@": f"{best['tps']:,.0f}", "@BESTPCT@": pct(best["tps"]),
              "@BESTP95@": f"{best['p95_ms']:.0f}", "@BASEP95@": f"{next(r['p95_ms'] for r in r3 if r['id']=='disk-26-r1'):.0f}",
              "@REPROWS@": reprows, "@EXTRAROWS@": extrarows or "<tr><td colspan=4>running</td></tr>",
-             "@R3TABLE@": r3table, "@R5ROWS@": r5rows, "@SVTABLE@": svtable}.items():
+             "@R3TABLE@": r3table, "@JOBROWS@": jrows, "@R5ROWS@": r5rows, "@SVTABLE@": svtable}.items():
     page = page.replace(k, v)
 open(os.path.join(R, "docs", "index.html"), "w").write(page)
 print("wrote docs/index.html")

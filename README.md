@@ -289,6 +289,18 @@ alone stayed ahead up to 60 GB. zram alone never OOM-killed: at 74 GB it ran, th
 out) for 20-30 minutes while MySQL stopped and ~88 GB of swapped pages came back. Size zram's disksize to the RAM you
 can give it, with a disk swap behind it.
 
+## Round 6: zlib level 1, repeats, real data (JOB)
+
+* InnoDB KEY_BLOCK_SIZE=8: 24 / 26 GB at zlib level 1 = 1,386 / 1,454 tps; level 6 repeat at 24 GB = 1,461 (round 4: 712,
+  slow-SSD period, see the round 4 correction).
+* MyRocks lz4 16 GB block cache repeat: 1,963 tps (round 4: 1,940).
+* Round 5 repeats at 48 GB: the first attempt ran on a datadir with leftover MyRocks tables and produced no data
+  (`r15m-r2` rows); rerun as `r15m-r2b` (`scripts/round6c.sh`).
+* JOB (IMDb 2013, 113 queries, 1 stream, 60 s cap), 23 GB reserved as huge pages (~6 GB available), raw rows
+  `data/job-imdb-results.jsonl`: normal swap 4 GB pool 996 s total; 9 GB pool with a swap file / zram lz4 / zram zstd /
+  zswap: 553 / 545 / 546 / 545 s. The gain comes from the larger pool; only ~3.5-4 GB was swapped and it was pool pages
+  the queries never touched (zram "ratios" 86-149x, ~13 swap-ins/s), so compression made no difference here.
+
 ## Page compression and decompression time vs storage latency
 
 `tools/pagecodec_bench.c`: 50,000 real 4 KiB pieces of the round-3 data (`--data-random-pct=10`), one core of the

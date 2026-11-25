@@ -209,9 +209,22 @@ zram alone has a 128 GB device: no budget. Numbers are not directly comparable w
   <li><strong>Once most data is on disk, a normal-size pool wins again</strong>: at 60–74 GB the swap file alone is no better than normal swap, and the compressed modes only help as far as their RAM budget reaches.</li>
 </ul>
 
+<h2>Real data: Join Order Benchmark on IMDb (round 6)</h2>
+<p>The 113 JOB queries on the real IMDb 2013 data set (~8 GB of InnoDB pages, 1.7× lz4 / 2.7× zstd), one stream, one
+warm-up pass then a measured pass, 60 s cap per query. To make the data not fit in RAM, 23 GB of the 31 GB were reserved
+as huge pages (unusable by MySQL), leaving ~6 GB available. Lower is better.</p>
+<div class="card"><div class="tw"><table>
+  <tr><th>Setup</th><th>Buffer pool</th><th>total s</th><th>geomean s</th><th>capped</th><th>InnoDB reads/s</th></tr>
+  @JOBROWS@
+</table></div>
+<ul class="findings">
+  <li><strong>A pool larger than the free RAM cut query time by 45% (996 → ~545 s), but compression was not the reason</strong>: a plain swap file on the 2nd SSD did as well (553 s) as zram lz4, zram zstd and zswap (545 s). Only ~3.5–4 GB of the pool was swapped, swap-ins were ~13 pages/s, and zram reported 86–149× "compression": the swapped part was pool pages the queries never touched. The pages the queries use fit in the ~6 GB that was left.</li>
+  <li>So on this real workload the useful lesson is the one from round 2: what matters is whether the <em>hot</em> data fits. With a single query stream, the server was CPU-bound on one core (12.6% of 8 threads) once the hot data was in memory.</li>
+</ul></div>
+
 <h2>Coming next</h2>
 <ul class="findings">
-  <li><strong>Round 6</strong> (running, ~19:00 UTC Nov 25): InnoDB table compression at zlib level 1; repeats of MyRocks lz4 and of round 5 at 48 GB; and a real-data check: the Join Order Benchmark (IMDb, 113 queries) with RAM reduced to ~8 GB by reserving huge pages.</li>
+  <li><strong>Repeats of round 5 at 48 GB</strong> (running, ~20:00 UTC Nov 25; the first attempt hit leftover MyRocks tables and produced no data).</li>
 </ul>
 
 <h2>Setup</h2>
