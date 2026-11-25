@@ -36,7 +36,21 @@ lat = [{"name": "lz4 decompress (16 KiB page)", "us": 4.2, "kind": "mem"},
        {"name": "Cloud network block storage read", "us": 750, "kind": "disk"},
        {"name": "This server's SATA SSD under load", "us": 3300, "kind": "disk"}]
 
-DATA = json.dumps({"series": series, "survey": sv, "lat": lat})
+SIZES = {"r11m": 35.7, "r15m": 47.9, "r19m": 60.2, "r23m": 73.5}
+R5 = [("zram", "zram alone"), ("zramdisk", "zram + swap (~10 GB zram budget)"), ("zswap-lz4", "zswap + swap (~10 GB pool)"),
+      ("disk2", "swap file alone"), ("disk", "normal swap, 26 GB pool")]
+r5 = []
+for key, label in R5:
+    pts = []
+    for r in r3:
+        t = r["id"].rsplit("-", 1)[-1]
+        if r["mode"] == key and t in SIZES and r.get("tps"):
+            pts.append([SIZES[t], r["tps"], r.get("p95_ms"), r.get("warm_tail_vs_window_pct"), r.get("sda_r_s")])
+    r5.append({"label": label, "pts": sorted(pts)})
+r5rows = "".join(f"<tr><td>{html.escape(lbl)}</td>" + "".join(
+    f"<td>{next((f'{p[1]:,.0f}' + (' †' if p[3] is not None and abs(p[3]) > 10 else '') for p in sr['pts'] if p[0] == g), '')}</td>" for g in SIZES.values()) + "</tr>"
+    for sr, (_, lbl) in zip(r5, R5))
+DATA = json.dumps({"series": series, "survey": sv, "lat": lat, "r5": r5})
 pct = lambda v: f"{(v / base - 1) * 100:+.0f}%"
 def rep_line(i1, i2):
     a = next((r for r in r3 if r["id"] == i1), None); b = reps.get(i2)
@@ -44,7 +58,7 @@ def rep_line(i1, i2):
     return f"<tr><td>{html.escape(i1[:-3])}</td><td>{a['tps']:,.0f}</td><td>{(b['tps'] if b else float('nan')):,.0f}</td><td>{(abs(b['tps']/a['tps']-1)*100 if b else float('nan')):.1f}%</td></tr>" if b else f"<tr><td>{html.escape(i1[:-3])}</td><td>{a['tps']:,.0f}</td><td>pending</td><td></td></tr>"
 reprows = "".join(rep_line(a, b) for a, b in [("disk-26-r1", "disk-26-r2"), ("zram-lz4-40-r1", "zram-lz4-40-r2"),
                                               ("zram-zstd-40-r1", "zram-zstd-40-r2"), ("zswap-lz4-40-r1", "zswap-lz4-40-r2")])
-extra = [r for r in r3 if r["id"].endswith(("-p80", "-p12")) or r["mode"].startswith(("zramdisk", "zramwb"))]
+extra = [r for r in r3 if (r["id"].endswith(("-p80", "-p12")) or r["mode"].startswith(("zramdisk", "zramwb"))) and r["id"].endswith(("-r1", "-p80", "-p12"))]
 extrarows = "".join(f"<tr><td>{html.escape(r['id'])}</td><td>{r['tps']:,.0f}</td><td>{pct(r['tps'])}</td><td>{r.get('p95_ms','')}</td></tr>" for r in extra if r.get("tps"))
 r3table = "".join(f"<tr><td>{html.escape(lbl)}</td>" + "".join(f"<td>{next((f'{t:,.0f}' for b,t,_ in s['pts'] if b==g), '')}</td>" for g in (16,20,24,26,28,32,36,40,44,48)) + "</tr>"
                   for s, (_, lbl) in zip(series, MODES))
@@ -66,7 +80,7 @@ page = page.replace("@R4ROWS@", r4rows)
 for k, v in {"@DATA@": DATA, "@BASE@": f"{base:,.0f}", "@BEST@": f"{best['tps']:,.0f}", "@BESTPCT@": pct(best["tps"]),
              "@BESTP95@": f"{best['p95_ms']:.0f}", "@BASEP95@": f"{next(r['p95_ms'] for r in r3 if r['id']=='disk-26-r1'):.0f}",
              "@REPROWS@": reprows, "@EXTRAROWS@": extrarows or "<tr><td colspan=4>running</td></tr>",
-             "@R3TABLE@": r3table, "@SVTABLE@": svtable}.items():
+             "@R3TABLE@": r3table, "@R5ROWS@": r5rows, "@SVTABLE@": svtable}.items():
     page = page.replace(k, v)
 open(os.path.join(R, "docs", "index.html"), "w").write(page)
 print("wrote docs/index.html")

@@ -264,6 +264,27 @@ MyRocks lz4 is the only alternative close to zram (85%, same p95): compressed fi
 cache too large crowds them out. Some InnoDB-compression and ZFS runs were not fully settled after the warm-up
 (`warm_tail_vs_window_pct` > 10%).
 
+## Round 5: data size sweep (36 -> 74 GB of the same compressible data)
+
+Raw rows: `data/sysbench-z40-results.jsonl`, ids ending `r11m` / `r15m` / `r19m` / `r23m` (16 x 11 / 15 / 19 / 23M rows =
+35.7 / 47.9 / 60.2 / 73.5 GB of tables); orchestration `scripts/round5.sh`. Uniform, 64 threads, 20 min warm-up +
+10 min measured, fresh load per size. Big pool = 1.1 x data. zram + swap: 32 GB zram device (~10 GB RAM) at priority 100
+plus the 2nd-SSD swap file at priority 10; zswap + swap: max_pool_percent 32 (~10 GB); zram alone: 128 GB device.
+
+| Setup | 36 GB | 48 GB | 60 GB | 74 GB |
+|---|---|---|---|---|
+| zram alone | 2,175 | 1,542 | 1,337 | 594 (host unresponsive 20-30 min afterwards) |
+| zram + swap (~10 GB budget) | 2,225 | 1,242 | 600 | 313 (not settled) |
+| zswap + swap (~10 GB budget) | 1,492 | 868 | 401 | 326 (not settled) |
+| swap file alone | 1,420 | 594 (not settled) | 413 | 351 |
+| normal swap, 26 GB pool | 774 | 506 | 430 | 375 |
+
+Findings: zram + swap matches zram alone while the data fits its budget, and beats zswap with the same budget by
+43-50% up to 60 GB. Past the budget it degrades instead of failing, but the fixed ~10 GB budget left RAM unused, so zram
+alone stayed ahead up to 60 GB. zram alone never OOM-killed: at 74 GB it ran, then left the host unresponsive (SSH timed
+out) for 20-30 minutes while MySQL stopped and ~88 GB of swapped pages came back. Size zram's disksize to the RAM you
+can give it, with a disk swap behind it.
+
 ## Page compression and decompression time vs storage latency
 
 `tools/pagecodec_bench.c`: 50,000 real 4 KiB pieces of the round-3 data (`--data-random-pct=10`), one core of the

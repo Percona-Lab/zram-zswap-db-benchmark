@@ -68,7 +68,7 @@ summary { cursor: pointer; color: var(--text-secondary); font-size: 14px; }
 .tw { overflow-x: auto; }
 table { border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; margin: 8px 0; min-width: 100%; }
 th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
-th:first-child, td:first-child { text-align: left; }
+th:first-child, td:first-child { text-align: left; white-space: normal; min-width: 150px; }
 table.lt th, table.lt td { text-align: left; white-space: normal; }
 th { color: var(--text-secondary); font-weight: 600; }
 .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -187,9 +187,30 @@ file throughout. Compare with normal swap at 26 GB (@BASE@ tps) and zram lz4 at 
   </ul>
 </div>
 
+<h2>Growing the data past what fits compressed (round 5)</h2>
+<p>The same compressible sysbench data, freshly loaded at 36, 48, 60 and 74 GB of tables (16 × 11–23M rows), uniform
+access, 64 threads, 20 min warm-up + 10 min measured. The compressed modes and the swap file use a buffer pool of
+1.1 × the data size. <strong>zram + swap</strong> = a 32 GB zram device (≈10 GB of RAM at ~3.2×) at priority 100 with the
+2nd-SSD swap file at priority 10; <strong>zswap + swap</strong> = <code>max_pool_percent=32</code> (≈10 GB), the same budget.
+zram alone has a 128 GB device: no budget. Numbers are not directly comparable with round 3 (fresh loads, longer warm-up).</p>
+<div class="card">
+  <h3>Throughput by data size</h3>
+  <div class="legend" id="lg5"></div>
+  <div id="c5"></div>
+  <details><summary>Table view (tps; † not fully settled after the warm-up)</summary><div class="tw"><table>
+    <tr><th>Setup</th><th>36 GB</th><th>48 GB</th><th>60 GB</th><th>74 GB</th></tr>@R5ROWS@</table></div></details>
+</div>
+<ul class="findings">
+  <li><strong>While the data fits in the zram budget, zram + swap matches zram alone</strong> (36 GB: 2,225 vs 2,175 tps) without touching the disk, and beats zswap with the same budget by ~50%.</li>
+  <li><strong>Past the budget, zram + swap degrades instead of failing</strong>, but it sends the overflow to disk even while RAM is free: its fixed ~10 GB budget was too small for this server, so zram alone (no budget) stayed ahead up to 60 GB. Size zram's <code>disksize</code> to the RAM you can actually give it (≈ RAM left after the pool's resident part × ratio).</li>
+  <li><strong>zram alone did not OOM: it took the server down.</strong> At 74 GB (88 GB swapped, ~29 GB of RAM in zram) the run finished (594 tps), but stopping MySQL afterwards left the host unresponsive to SSH for 20–30 minutes; the kernel never killed anything. Without a fallback, an oversized pool on zram can stall the whole host.</li>
+  <li><strong>With the same compressed budget, zram + swap beat zswap + swap at 36–60 GB</strong> (+49%, +43%, +50%). At 74 GB both fell below normal swap with a 26 GB pool, and neither had settled after the warm-up.</li>
+  <li><strong>Once most data is on disk, a normal-size pool wins again</strong>: at 60–74 GB the swap file alone is no better than normal swap, and the compressed modes only help as far as their RAM budget reaches.</li>
+</ul>
+
 <h2>Coming next</h2>
 <ul class="findings">
-  <li><strong>Data size sweep</strong> (running, results ~06:00 UTC Nov 25): 36 → 75 GB of the same compressible data. zram alone vs zram + lower-priority swap vs zswap + swap (same ~10 GB compressed budget) vs swap alone vs normal swap: does zram + swap match zram while the data fits compressed and degrade instead of OOM when it doesn't?</li>
+  <li><strong>Round 6</strong> (running, ~19:00 UTC Nov 25): InnoDB table compression at zlib level 1; repeats of MyRocks lz4 and of round 5 at 48 GB; and a real-data check: the Join Order Benchmark (IMDb, 113 queries) with RAM reduced to ~8 GB by reserving huge pages.</li>
 </ul>
 
 <h2>Setup</h2>
@@ -375,7 +396,37 @@ function latChart() {
     hit.addEventListener("mouseleave", hideTip);
   });
 }
-function draw() { lineChart(); surveyChart(); latChart(); }
+
+function sizeChart() {
+  const host = document.getElementById("c5"); host.innerHTML = "";
+  const lg = document.getElementById("lg5"); lg.innerHTML = "";
+  D.r5.forEach((s, i) => { lg.insertAdjacentHTML("beforeend", `<span><i style="background:var(${COLS[i]})"></i>${s.label}</span>`); });
+  const W = Math.max(320, host.clientWidth), H = W < 520 ? 300 : 340, m = {l: 48, r: W < 520 ? 12 : 24, t: 12, b: 36};
+  const svg = el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Transactions per second by data size for five swap setups"}, host);
+  const xs = [32, 78], ymax = 2500;
+  const X = v => m.l + (v - xs[0]) / (xs[1] - xs[0]) * (W - m.l - m.r), Y = v => H - m.b - v / ymax * (H - m.t - m.b);
+  for (let v = 0; v <= ymax; v += 500) { el("line", {x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css("--grid")}, svg); const t = el("text", {x: m.l - 8, y: Y(v) + 4, "text-anchor": "end"}, svg); t.textContent = fmt(v); }
+  [36, 48, 60, 74].forEach(v => { const t = el("text", {x: X(v), y: H - m.b + 18, "text-anchor": "middle"}, svg); t.textContent = v; });
+  const xl = el("text", {x: (m.l + W - m.r) / 2, y: H - 4, "text-anchor": "middle"}, svg); xl.textContent = "data size, GB of tables (server RAM: 31 GB)";
+  D.r5.forEach((s, i) => {
+    const c = css(COLS[i]);
+    el("path", {d: s.pts.map((p, j) => (j ? "L" : "M") + X(p[0]) + "," + Y(p[1])).join(""), fill: "none", stroke: c, "stroke-width": 2, "stroke-linejoin": "round"}, svg);
+    s.pts.forEach(p => el("circle", {cx: X(p[0]), cy: Y(p[1]), r: 4, fill: c, stroke: css("--surface-1"), "stroke-width": 2}, svg));
+  });
+  const ov = el("rect", {x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent"}, svg);
+  const cross = el("line", {y1: m.t, y2: H - m.b, stroke: css("--text-muted"), opacity: 0}, svg);
+  const sizes = [35.7, 47.9, 60.2, 73.5];
+  ov.addEventListener("mousemove", ev => {
+    const r = svg.getBoundingClientRect(); const vx = (ev.clientX - r.left) * W / r.width;
+    const g = sizes.reduce((a, b) => Math.abs(X(b) - vx) < Math.abs(X(a) - vx) ? b : a);
+    cross.setAttribute("x1", X(g)); cross.setAttribute("x2", X(g)); cross.setAttribute("opacity", .5);
+    let h = `<b>${g} GB of tables</b>`;
+    D.r5.forEach((s, i) => { const p = s.pts.find(p => p[0] === g); if (p) h += `<br><span style="color:var(${COLS[i]})">●</span> ${s.label}: ${fmt(p[1])} tps, p95 ${Math.round(p[2])} ms${p[3] !== null && Math.abs(p[3]) > 10 ? " (not settled)" : ""}`; });
+    showTip(ev, h);
+  });
+  ov.addEventListener("mouseleave", () => { hideTip(); cross.setAttribute("opacity", 0); });
+}
+function draw() { lineChart(); sizeChart(); surveyChart(); latChart(); }
 draw();
 let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(draw, 120); });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
