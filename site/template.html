@@ -101,6 +101,16 @@ contain mistakes. Scripts and raw data: <a href="https://github.com/Percona-Lab/
   <div class="tile"><div class="v">1.1–1.4×</div><div class="k">how well common OLTP benchmarks' InnoDB pages compress with lz4: too little to test this</div></div>
 </div>
 
+<h2>What we found, across all rounds</h2>
+<ul class="findings">
+  <li><strong>Compressed memory wins big only when the hot data does not fit in RAM but does fit once compressed</strong>: with ~3× compressible data, zram lz4 gave +159% throughput and −70% p95 latency (round 3, repeats within 0.6%). When the hot data already fits (AuctionMark, JOB on IMDb) or the data barely compresses (HammerDB, sysbench, YCSB: 1.1–1.4×), it changes little.</li>
+  <li><strong>Use zram with a lower-priority disk swap behind it, sized to the RAM you can give it</strong>: it matched zram alone while the data fit its budget and slowed down gracefully beyond it, where zram alone stalled the whole host for 20–30 minutes instead of OOM-killing. With the same compressed budget it beat zswap by 43–50% (round 5).</li>
+  <li><strong>zram beat zswap and lz4 beat zstd</strong> on this server: zswap keeps writing cold pages to disk; zstd's better ratio costs CPU that becomes the limit.</li>
+  <li><strong>Other ways to compress</strong> (round 4, round 6): MyRocks lz4 reached ~85% of zram (1,940–1,963 tps); InnoDB table compression +65% over no compression (1,386–1,461 tps, zlib level made no difference); ZFS lost in every configuration; InnoDB page compression saves disk, not cache.</li>
+  <li><strong>Benchmark data matters</strong>: most benchmark data compresses far less than real data might; we patched sysbench (<a href="https://github.com/Percona-Lab/sysbench-compressible">sysbench-compressible</a>) to control it.</li>
+  <li><strong>Watch the disk, not just the setting</strong>: one series ran while the datadir SSD was ~5× slower on writes and understated InnoDB compression by ~2× until repeated (round 4 correction).</li>
+</ul>
+
 <h2>The headline test</h2>
 <p>sysbench <code>oltp_read_write</code>, 64 threads, uniform access over 36 GB of tables (49 GB on disk), binary log off.
 The data was made compressible (~3× with lz4, ~6× with zstd) with
@@ -224,7 +234,7 @@ as huge pages (unusable by MySQL), leaving ~6 GB available. Lower is better.</p>
 
 <h2>Coming next</h2>
 <ul class="findings">
-  <li><strong>Repeats of round 5 at 48 GB</strong> (running, ~20:00 UTC Nov 25; the first attempt hit leftover MyRocks tables and produced no data).</li>
+  <li><strong>Repeats of round 5 at 48 GB</strong> (running, ~19:30 UTC Nov 25; the first attempt hit leftover MyRocks tables and produced no data). So far: normal swap 522 tps (first run 506), swap file alone 685 (first run 594, which had not settled).</li>
 </ul>
 
 <h2>Setup</h2>
