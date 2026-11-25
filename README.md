@@ -301,6 +301,14 @@ can give it, with a disk swap behind it.
   zswap: 553 / 545 / 546 / 545 s. The gain comes from the larger pool; only ~3.5-4 GB was swapped and it was pool pages
   the queries never touched (zram "ratios" 86-149x, ~13 swap-ins/s), so compression made no difference here.
 
+## Round 7: zswap shrinker off; zram sized to the box
+
+36 GB of tables (40 GB pool): zram lz4 2,246 tps; zswap lz4 shrinker on (cap 50%) 1,666 with ~1,000 writebacks/s;
+shrinker off 1,695 (44 GB pool: 1,840) with no writeback and no disk reads. 48 GB of tables (53 GB pool): zram + swap
+with a 64 GB zram device (~13 GB RAM) 1,552 tps = zram alone (1,542 / 1,539); zswap + swap shrinker off cap 50% / 80%
+1,237 / 1,286 (shrinker on, cap 32%: 868 / 912). zswap's remaining gap to zram is its swap path, not writeback (likely
+the swap cache, which zram as a synchronous device skips). Orchestration `scripts/round7.sh`.
+
 ## Page compression and decompression time vs storage latency
 
 `tools/pagecodec_bench.c`: 50,000 real 4 KiB pieces of the round-3 data (`--data-random-pct=10`), one core of the

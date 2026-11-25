@@ -104,8 +104,8 @@ contain mistakes. Scripts and raw data: <a href="https://github.com/Percona-Lab/
 <h2>What we found, across all rounds</h2>
 <ul class="findings">
   <li><strong>Compressed memory wins big only when the hot data does not fit in RAM but does fit once compressed</strong>: with ~3× compressible data, zram lz4 gave +159% throughput and −70% p95 latency (round 3, repeats within 0.6%). When the hot data already fits (AuctionMark, JOB on IMDb) or the data barely compresses (HammerDB, sysbench, YCSB: 1.1–1.4×), it changes little.</li>
-  <li><strong>Use zram with a lower-priority disk swap behind it, sized to the RAM you can give it</strong>: it matched zram alone while the data fit its budget and slowed down gracefully beyond it, where zram alone stalled the whole host for 20–30 minutes instead of OOM-killing. With the same compressed budget it beat zswap by 43–50% (round 5).</li>
-  <li><strong>zram beat zswap and lz4 beat zstd</strong> on this server: zswap keeps writing cold pages to disk; zstd's better ratio costs CPU that becomes the limit.</li>
+  <li><strong>Use zram with a lower-priority disk swap behind it, sized to the RAM you can give it</strong>: sized to the box it matched zram alone (1,552 vs 1,542 tps at 48 GB, round 7) and it slows down gracefully once the data outgrows it, where zram alone stalled the whole host for 20–30 minutes instead of OOM-killing. With the same compressed budget it beat zswap by 43–50% (round 5).</li>
+  <li><strong>zram beat zswap and lz4 beat zstd</strong> on this server: even with its shrinker off and no disk traffic, zswap stayed ~20–25% behind zram (round 7); zstd's better ratio costs CPU that becomes the limit.</li>
   <li><strong>Other ways to compress</strong> (round 4, round 6): MyRocks lz4 reached ~85% of zram (1,940–1,963 tps); InnoDB table compression +65% over no compression (1,386–1,461 tps, zlib level made no difference); ZFS lost in every configuration; InnoDB page compression saves disk, not cache.</li>
   <li><strong>Benchmark data matters</strong>: most benchmark data compresses far less than real data might; we patched sysbench (<a href="https://github.com/Percona-Lab/sysbench-compressible">sysbench-compressible</a>) to control it.</li>
   <li><strong>Watch the disk, not just the setting</strong>: one series ran while the datadir SSD was ~5× slower on writes and understated InnoDB compression by ~2× until repeated (round 4 correction).</li>
@@ -233,10 +233,29 @@ as huge pages (unusable by MySQL), leaving ~6 GB available. Lower is better.</p>
   <li>So on this real workload the useful lesson is the one from round 2: what matters is whether the <em>hot</em> data fits. With a single query stream, the server was CPU-bound on one core (12.6% of 8 threads) once the hot data was in memory.</li>
 </ul></div>
 
-<h2>Coming next</h2>
+<h2>zswap with the shrinker off, and zram sized to the box (round 7)</h2>
+<p>Every earlier zswap run used the kernel default <code>shrinker_enabled=Y</code>, which writes cold pages back to disk before the pool is full.
+Round 7 turned it off, with zram and default zswap re-run in the same session as references, and at 48 GB gave zswap and
+zram + swap the RAM the box can spare instead of a fixed budget.</p>
+<div class="card"><div class="tw"><table>
+  <tr><th>Setup</th><th>Data</th><th>Pool</th><th>tps</th><th>p95 ms</th><th>writeback/s</th><th>disk reads/s</th></tr>
+  <tr><td>zram lz4 (reference)</td><td>36 GB</td><td>40 GB</td><td>2,246</td><td>52</td><td>0</td><td>0</td></tr>
+  <tr><td>zswap lz4, shrinker on, cap 50% (reference)</td><td>36 GB</td><td>40 GB</td><td>1,666</td><td>84</td><td>1,006</td><td>1,252</td></tr>
+  <tr><td>zswap lz4, <strong>shrinker off</strong>, cap 50%</td><td>36 GB</td><td>40 / 44 GB</td><td>1,695 / 1,840</td><td>83 / 64</td><td>0</td><td>0</td></tr>
+  <tr><td>zram alone (round 5)</td><td>48 GB</td><td>53 GB</td><td>1,542 / 1,539</td><td>92</td><td>–</td><td>0</td></tr>
+  <tr><td><strong>zram + swap, 64 GB zram device</strong> (~13 GB RAM used)</td><td>48 GB</td><td>53 GB</td><td><strong>1,552</strong></td><td>91</td><td>–</td><td>0</td></tr>
+  <tr><td>zswap + swap, shrinker off, cap 50% / 80%</td><td>48 GB</td><td>53 GB</td><td>1,237 / 1,286</td><td>121 / 107</td><td>0</td><td>0</td></tr>
+  <tr><td>zswap + swap, shrinker on, cap 32% (round 5)</td><td>48 GB</td><td>53 GB</td><td>868 / 912</td><td>140–159</td><td>–</td><td>~16,000</td></tr>
+</table></div>
 <ul class="findings">
-  <li><strong>zswap with its shrinker off</strong> (running, ~01:00 UTC Nov 26): at 40 GB against zram and default zswap in the same session, and at 48 GB with the RAM the box can spare (pool 50% / 80%, and zram + swap with a 64 GB device).</li>
-</ul>
+  <li><strong>zram + swap sized to the box matches zram alone</strong> (1,552 vs 1,542 tps at 48 GB) while keeping a disk fallback for when the data outgrows it, the setup to use.</li>
+  <li><strong>Turning zswap's shrinker off removes all writeback and disk reads but gains only 2–5%</strong> at 40 GB; at 48 GB it takes zswap from ~900 to ~1,250–1,290 tps by keeping pages in RAM. zswap still trails zram by ~20–25% with no disk traffic at all. The likely reason (from how the kernel handles the two, not measured here): zram is a synchronous swap device, so a fault reads it directly and skips the swap cache; zswap sits in front of a normal swap device and every swap-in goes through the full swap-cache path.</li>
+</ul></div>
+
+<h2>What comes next</h2>
+<p>This is the exploratory study (v1). A second study (v2) repeats the key questions with a consistent protocol on a
+fresh dedicated box (AMD EPYC Zen 5, NVMe, one disk for the database): best configuration per method at each data
+size, uniform and zipfian access, and InnoDB, MyRocks and TidesDB on one Percona Server 9.7 build.</p>
 
 <h2>Setup</h2>
 <ul class="findings">
