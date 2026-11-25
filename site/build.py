@@ -87,5 +87,6 @@ for k, v in {"@DATA@": DATA, "@BASE@": f"{base:,.0f}", "@BEST@": f"{best['tps']:
              "@REPROWS@": reprows, "@EXTRAROWS@": extrarows or "<tr><td colspan=4>running</td></tr>",
              "@R3TABLE@": r3table, "@JOBROWS@": jrows, "@R5ROWS@": r5rows, "@SVTABLE@": svtable}.items():
     page = page.replace(k, v)
-open(os.path.join(R, "docs", "index.html"), "w").write(page)
-print("wrote docs/index.html")
+os.makedirs(os.path.join(R, "docs", "v1"), exist_ok=True)
+open(os.path.join(R, "docs", "v1", "index.html"), "w").write(page)
+print("wrote docs/v1/index.html")

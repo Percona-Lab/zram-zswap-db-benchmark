@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zram and zswap for MySQL</title>
+<meta name="description" content="Can Linux zram or zswap let the InnoDB buffer pool grow past RAM? Benchmark results, data compressibility of 16 benchmarks, and codec vs storage latency.">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f5f2; --surface-1: #fcfcfb; --border: #e4e2dc; --grid: #ebe9e4;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #77756f;
+  --accent: #2a78d6;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+  --tip-bg: #0b0b0b; --tip-fg: #fcfcfb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211; --surface-1: #1a1a19; --border: #2e2e2b; --grid: #2a2a27;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #9a998f;
+    --accent: #3987e5;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c;
+    --tip-bg: #f0efec; --tip-fg: #1a1a19;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211; --surface-1: #1a1a19; --border: #2e2e2b; --grid: #2a2a27;
+  --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #9a998f;
+  --accent: #3987e5;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c;
+  --tip-bg: #f0efec; --tip-fg: #1a1a19;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text-primary);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: clamp(26px, 4vw, 38px); line-height: 1.15; margin: 0 0 12px; letter-spacing: -0.01em; }
+h2 { font-size: 22px; margin: 48px 0 8px; }
+h3 { font-size: 16px; margin: 20px 0 6px; }
+p { margin: 8px 0; color: var(--text-secondary); max-width: 760px; }
+p strong, li strong { color: var(--text-primary); }
+a { color: var(--accent); }
+.lede { font-size: 18px; color: var(--text-secondary); }
+.note { font-size: 14px; color: var(--text-muted); }
+.disclosure { border-left: 3px solid var(--border); padding: 8px 14px; margin: 20px 0; font-size: 14px; color: var(--text-secondary); background: var(--surface-1); border-radius: 0 8px 8px 0; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 24px 0; }
+.tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+.tile .v { font-size: 32px; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.tile .k { font-size: 14px; color: var(--text-secondary); margin-top: 4px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin: 16px 0; }
+.card h3 { margin-top: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--text-secondary); margin: 4px 0 8px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.legend i.sq { height: 10px; width: 10px; border-radius: 2px; }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+svg text { fill: var(--text-muted); font-size: 12px; }
+svg .lbl { fill: var(--text-secondary); font-size: 12px; }
+svg .val { fill: var(--text-primary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.tip { position: fixed; pointer-events: none; background: var(--tip-bg); color: var(--tip-fg); font-size: 13px; line-height: 1.4;
+  padding: 8px 10px; border-radius: 8px; opacity: 0; transition: opacity .1s; z-index: 10; max-width: 280px; }
+ul.findings { padding-left: 20px; color: var(--text-secondary); max-width: 780px; }
+ul.findings li { margin: 6px 0; }
+details { margin: 8px 0; }
+summary { cursor: pointer; color: var(--text-secondary); font-size: 14px; }
+.tw { overflow-x: auto; }
+table { border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; margin: 8px 0; min-width: 100%; }
+th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; white-space: normal; min-width: 150px; }
+table.lt th, table.lt td { text-align: left; white-space: normal; }
+th { color: var(--text-secondary); font-weight: 600; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 4px; font-size: 13px; }
+.flow .b { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--bg); color: var(--text-primary); }
+.flow .b.hl { border-color: var(--s1); }
+.flow .a { color: var(--text-muted); }
+pre { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+code { font-size: 0.92em; }
+footer { margin-top: 56px; font-size: 13px; color: var(--text-muted); border-top: 1px solid var(--border); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+<p class="note">Percona Lab · benchmark study · November 2026</p>
+<h1>zram and zswap for MySQL: letting the InnoDB buffer pool grow past RAM</h1>
+<p class="lede">Can Linux compressed memory (zram, zswap) make an I/O-bound InnoDB workload faster by letting
+<code>innodb_buffer_pool_size</code> exceed what fits in RAM? Yes, by a lot, but only when the data compresses well
+and the frequently used data does not fit in RAM uncompressed.</p>
+
+<div class="disclosure">This study was run and written up by an AI agent (Claude) under the direction of a person.
+The numbers are measured; the write-up and conclusions are AI-generated and were spot-checked only, so they may
+contain mistakes. Scripts and raw data: <a href="https://github.com/Percona-Lab/zram-zswap-db-benchmark">github.com/Percona-Lab/zram-zswap-db-benchmark</a>.</div>
+
+<div class="tiles">
+  <div class="tile"><div class="v">+159%</div><div class="k">throughput with zram lz4 and a 40 GB buffer pool on a 31 GB server (2,286 vs 882 tps)</div></div>
+  <div class="tile"><div class="v">50 ms</div><div class="k">p95 latency, down from 170 ms with the best pool that fits without compression</div></div>
+  <div class="tile"><div class="v">~1 µs</div><div class="k">lz4 decompression of a 4 KiB page, vs ~50–200 µs for an idle SSD read</div></div>
+  <div class="tile"><div class="v">1.1–1.4×</div><div class="k">how well common OLTP benchmarks' InnoDB pages compress with lz4: too little to test this</div></div>
+</div>
+
+<h2>What we found, across all rounds</h2>
+<ul class="findings">
+  <li><strong>Compressed memory wins big only when the hot data does not fit in RAM but does fit once compressed</strong>: with ~3× compressible data, zram lz4 gave +159% throughput and −70% p95 latency (round 3, repeats within 0.6%). When the hot data already fits (AuctionMark, JOB on IMDb) or the data barely compresses (HammerDB, sysbench, YCSB: 1.1–1.4×), it changes little.</li>
+  <li><strong>Use zram with a lower-priority disk swap behind it, sized to the RAM you can give it</strong>: it matched zram alone while the data fit its budget and slowed down gracefully beyond it, where zram alone stalled the whole host for 20–30 minutes instead of OOM-killing. With the same compressed budget it beat zswap by 43–50% (round 5).</li>
+  <li><strong>zram beat zswap and lz4 beat zstd</strong> on this server: zswap keeps writing cold pages to disk; zstd's better ratio costs CPU that becomes the limit.</li>
+  <li><strong>Other ways to compress</strong> (round 4, round 6): MyRocks lz4 reached ~85% of zram (1,940–1,963 tps); InnoDB table compression +65% over no compression (1,386–1,461 tps, zlib level made no difference); ZFS lost in every configuration; InnoDB page compression saves disk, not cache.</li>
+  <li><strong>Benchmark data matters</strong>: most benchmark data compresses far less than real data might; we patched sysbench (<a href="https://github.com/Percona-Lab/sysbench-compressible">sysbench-compressible</a>) to control it.</li>
+  <li><strong>Watch the disk, not just the setting</strong>: one series ran while the datadir SSD was ~5× slower on writes and understated InnoDB compression by ~2× until repeated (round 4 correction).</li>
+</ul>
+
+<h2>The headline test</h2>
+<p>sysbench <code>oltp_read_write</code>, 64 threads, uniform access over 36 GB of tables (49 GB on disk), binary log off.
+The data was made compressible (~3× with lz4, ~6× with zstd) with
+<a href="https://github.com/Percona-Lab/sysbench-compressible">sysbench-compressible</a>: it cannot fit in the buffer
+pool uncompressed on this 31 GB server, but fits in RAM once compressed. 15 min warm-up + 10 min measured; every
+buffer pool was full of data during the measured window.</p>
+
+<div class="card">
+  <h3>Throughput by buffer pool size</h3>
+  <div class="legend" id="lg1"></div>
+  <div id="c1"></div>
+  <details><summary>Table view (transactions per second)</summary><div class="tw"><table>
+    <tr><th>Mode</th><th>16</th><th>20</th><th>24</th><th>26</th><th>28</th><th>32</th><th>36</th><th>40</th><th>44</th><th>48 GB</th></tr>
+    <tr><td>zram lz4</td><td></td><td></td><td></td><td></td><td></td><td>1,228</td><td>1,692</td><td>2,286</td><td>2,273</td><td>2,284</td></tr><tr><td>zswap lz4</td><td></td><td></td><td></td><td></td><td></td><td>1,167</td><td>1,304</td><td>1,698</td><td>1,682</td><td>1,632</td></tr><tr><td>zram zstd</td><td></td><td></td><td></td><td></td><td></td><td>1,195</td><td>1,202</td><td>1,761</td><td>1,689</td><td>1,689</td></tr><tr><td>zswap zstd</td><td></td><td></td><td></td><td></td><td></td><td>1,139</td><td>1,169</td><td>1,440</td><td>1,229</td><td>1,260</td></tr><tr><td>swap file on 2nd SSD, no compression</td><td></td><td></td><td></td><td></td><td></td><td>932</td><td></td><td>1,233</td><td></td><td></td></tr><tr><td>normal swap (baseline)</td><td>511</td><td>653</td><td>794</td><td>882</td><td>799</td><td></td><td></td><td></td><td></td><td></td></tr></table></div></details>
+</div>
+
+<ul class="findings">
+  <li><strong>zram with lz4 is the clear winner</strong>: at a 40 GB pool all data stays in memory (InnoDB disk reads ~0/s), part of it compressed at ~3.3×. The server turns from I/O-bound into CPU-bound, and CPU per transaction is no higher than with disk I/O.</li>
+  <li><strong>zswap trails zram</strong> (+93% vs +159%), and it is not the pool cap: raising <code>max_pool_percent</code> from 50 to 80 changed nothing at 40 GB (1,711 vs 1,698 tps). zswap keeps writing cold pages back to the swap disk (1–5k pages/s, the zswap shrinker is on by default in kernel 6.8), and every miss is a disk read; zram never touches the disk.</li>
+  <li><strong>lz4 beats zstd</strong> once lz4 already fits the data: zstd compresses ~2× better but costs ~6× more CPU to decompress, and CPU becomes the limit. zstd is also less stable: its two runs at 40 GB differ by 11% (1,761 vs 1,563 tps), while every other repeated point is within 1%.</li>
+  <li><strong>A plain swap file on a second SSD</strong> also helps (+40% at 40 GB): a fast swap device acts as an extra cache tier. Compression adds the rest.</li>
+  <li><strong>Disk swap past the best size hurts</strong>: normal swap at 28 GB is slower than at 26 GB. Compressed swap made oversizing harmless in every round.</li>
+</ul>
+
+<h2>Why most benchmarks can't show this: page compressibility</h2>
+<p>The result depends on how well InnoDB pages compress. Each benchmark's data was loaded at small scale and every
+4 KiB piece of its table files compressed on its own, the way zram and zswap do. Most OLTP benchmarks generate
+random strings, which lz4 barely compresses. Even real data sets reach only ~1.7×.</p>
+
+<div class="card">
+  <h3>Compression ratio of InnoDB pages (4 KiB pieces)</h3>
+  <div class="legend"><span><i class="sq" style="background:var(--s1)"></i>lz4</span><span><i class="sq" style="background:var(--s2)"></i>zstd</span><span>· dashed line: 3×</span></div>
+  <div id="c2"></div>
+  <p class="note">* SmallBank's ratio comes from zero-padded 64-character customer names; the tables its transactions update compress ~2×.</p>
+  <details><summary>Table view</summary><div class="tw"><table><tr><th>Benchmark</th><th>lz4</th><th>zstd</th></tr><tr><td>BenchBase SmallBank*</td><td>3.49</td><td>6.32</td></tr><tr><td>sysbench, --data-random-pct=10</td><td>2.96</td><td>5.90</td></tr><tr><td>BenchBase AuctionMark</td><td>2.79</td><td>4.34</td></tr><tr><td>TPC-H (go-tpc)</td><td>2.38</td><td>3.26</td></tr><tr><td>BenchBase SEATS</td><td>2.27</td><td>3.13</td></tr><tr><td>BenchBase OT-Metrics</td><td>2.02</td><td>3.15</td></tr><tr><td>BenchBase Twitter</td><td>1.96</td><td>2.40</td></tr><tr><td>employees sample DB</td><td>1.76</td><td>2.41</td></tr><tr><td>IMDb (real data)</td><td>1.73</td><td>2.68</td></tr><tr><td>BenchBase TATP</td><td>1.59</td><td>2.35</td></tr><tr><td>BenchBase TPC-C</td><td>1.42</td><td>2.11</td></tr><tr><td>TPC-C (go-tpc)</td><td>1.36</td><td>1.84</td></tr><tr><td>HammerDB TPROC-C</td><td>1.33</td><td>1.72</td></tr><tr><td>BenchBase Wikipedia</td><td>1.22</td><td>1.45</td></tr><tr><td>sysbench (stock)</td><td>1.14</td><td>2.12</td></tr><tr><td>BenchBase YCSB</td><td>1.14</td><td>1.36</td></tr></table></div></details>
+</div>
+
+<h2>Compressed memory vs storage latency</h2>
+<p>Decompressing a page is far faster than reading it from any storage. Measured on this server's CPU (Xeon E3-1270 v6,
+one core) with real pages; storage figures are typical values except the last, measured under the benchmark load.</p>
+<div class="card">
+  <h3>Time to get one 16 KiB InnoDB page back (µs, log scale)</h3>
+  <div class="legend"><span><i class="sq" style="background:var(--s1)"></i>compressed memory</span><span><i class="sq" style="background:var(--s2)"></i>storage</span></div>
+  <div id="c3"></div>
+  <p class="note">Compressing a 4 KiB page: 4.4 µs (lz4), 14 µs (zstd). The whole kernel path (reclaim, faults, compression) cost roughly 25 µs of CPU per page swapped out and back in.</p>
+</div>
+
+<h2>Earlier rounds</h2>
+<div class="cols">
+  <div class="card"><h3>HammerDB TPROC-C, 1000 warehouses (~93 GB)</h3>
+    <p>Pages compress only ~1.25× with lz4. zram gained +10% at 32 GB and was OOM-killed beyond. zswap reached +21% at 40 GB, but the same swap file without zswap already gave +14%: most of the gain was the second SSD.</p></div>
+  <div class="card"><h3>BenchBase AuctionMark (~86 GB)</h3>
+    <p>CPU-bound, and the frequently used data (~23 GB) fit in RAM. Every setup tied (~7,500 req/s) and larger pools never filled. Compressed swap did make oversizing harmless; disk swap cost 13–22%.</p></div>
+</div>
+
+<h2>Repeatability and follow-up tests</h2>
+<div class="card">
+  <h3>Repeats (run-to-run noise)</h3>
+  <div class="tw"><table><tr><th>Point</th><th>run 1 tps</th><th>run 2 tps</th><th>difference</th></tr><tr><td>disk-26</td><td>882</td><td>876</td><td>0.6%</td></tr><tr><td>zram-lz4-40</td><td>2,286</td><td>2,283</td><td>0.1%</td></tr><tr><td>zram-zstd-40</td><td>1,761</td><td>1,563</td><td>11.2%</td></tr><tr><td>zswap-lz4-40</td><td>1,698</td><td>1,696</td><td>0.1%</td></tr></table></div>
+  <h3>zswap with a larger pool cap, zram with a disk fallback, zram writeback</h3>
+  <p class="note">zram capped at 12 GB of uncompressed pages (~3.6 GB of RAM) with the 2nd-SSD swap file as a lower-priority fallback (<code>swapon -p 100 /dev/zram0; swapon -p 10 swapfile</code>), with and without zram writeback of idle pages every minute; zswap with <code>max_pool_percent</code> 80 and 12 (12% ≈ the same compressed size as the capped zram).</p>
+  <ul class="findings">
+    <li><strong>This is a limited-memory simulation, not comparable with the uncapped zram run</strong>: the 12 GB cap gives zram ~3.6 GB of RAM where the uncapped device used ~6 GB, and leaves RAM unused. Compare it only with zswap at 12% (similar compressed budget). The fair test, growing the data set past what fits compressed with every setup uncapped, is round 5 (below).</li>
+    <li><strong>zram with a lower-priority disk fallback works</strong>: no OOM, +77–105% over normal swap, but once zram is full the rest goes to disk (18–32k reads/s from the 2nd SSD).</li>
+    <li><strong>With the same compressed size, zram + fallback beats zswap</strong> (1,566 vs 1,353 tps at 40 GB; 1,804 vs 1,322 at 44 GB).</li>
+    <li><strong>zram writeback did not help</strong> on this uniform workload (1,536 vs 1,566): the pages it wrote out were read back about as fast. It needs a workload with a genuinely cold set.</li>
+    <li><strong>zswap's gap to zram is not its pool cap</strong>: 80% instead of 50% changed little (1,711 vs 1,698 at 40 GB).</li>
+  </ul>
+  <div class="tw"><table><tr><th>Run</th><th>tps</th><th>vs baseline</th><th>p95 ms</th></tr><tr><td>zswap-lz4-40-p80</td><td>1,710</td><td>+94%</td><td>81.48</td></tr><tr><td>zswap-lz4-44-p80</td><td>1,833</td><td>+108%</td><td>66.84</td></tr><tr><td>zramdisk-lz4-40-r1</td><td>1,566</td><td>+78%</td><td>99.33</td></tr><tr><td>zramdisk-lz4-44-r1</td><td>1,804</td><td>+105%</td><td>77.19</td></tr><tr><td>zramwb-lz4-40-r1</td><td>1,536</td><td>+74%</td><td>94.1</td></tr><tr><td>zramwb-lz4-44-r1</td><td>1,772</td><td>+101%</td><td>81.48</td></tr><tr><td>zswap-lz4-40-p12</td><td>1,353</td><td>+53%</td><td>75.82</td></tr><tr><td>zswap-lz4-44-p12</td><td>1,322</td><td>+50%</td><td>81.48</td></tr></table></div>
+</div>
+
+<h2>Other ways to compress (round 4)</h2>
+<p>The same 40 GB compressible data set and workload, compressing somewhere else: inside InnoDB, in the file system (ZFS keeps
+its read cache, the ARC, compressed), or with a compressing storage engine (MyRocks). Kernel swap is the host's normal 8 GB
+file throughout. Compare with normal swap at 26 GB (882 tps) and zram lz4 at 40 GB (2,286 tps).</p>
+<div class="card">
+  <div class="tw"><table><tr><th>Setup</th><th>Memory</th><th>tps</th><th>vs normal swap 26 GB</th><th>p95 ms</th><th>iowait %</th></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=8 (zlib)</td><td>16 GB pool</td><td>335 † ‡</td><td>-62%</td><td>451</td><td>68.3</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=8 (zlib)</td><td>24 GB pool</td><td>712 † ‡</td><td>-19%</td><td>215</td><td>21.4</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=8 (zlib)</td><td>26 GB pool</td><td>661 ‡</td><td>-25%</td><td>240</td><td>21.9</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=4 (zlib)</td><td>16 GB pool</td><td>573 † ‡</td><td>-35%</td><td>332</td><td>26.0</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=4 (zlib)</td><td>24 GB pool</td><td>670 † ‡</td><td>-24%</td><td>282</td><td>23.9</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=4 (zlib)</td><td>26 GB pool</td><td>650 ‡</td><td>-26%</td><td>282</td><td>24.1</td></tr><tr><td>InnoDB page compression, COMPRESSION=&#x27;lz4&#x27;</td><td>26 GB pool</td><td>328 † ‡</td><td>-63%</td><td>435</td><td>79.8</td></tr><tr><td>ZFS lz4, compressed ARC</td><td>8 GB pool + 18 GB ARC</td><td>578</td><td>-34%</td><td>183</td><td>64.1</td></tr><tr><td>ZFS lz4, compressed ARC</td><td>12 GB pool + 14 GB ARC</td><td>376</td><td>-57%</td><td>357</td><td>76.8</td></tr><tr><td>ZFS lz4, compressed ARC</td><td>16 GB pool + 10 GB ARC</td><td>280 †</td><td>-68%</td><td>467</td><td>82.8</td></tr><tr><td>ZFS zstd, compressed ARC</td><td>8 GB pool + 18 GB ARC</td><td>496</td><td>-44%</td><td>320</td><td>21.2</td></tr><tr><td>ZFS zstd, compressed ARC</td><td>12 GB pool + 14 GB ARC</td><td>538</td><td>-39%</td><td>282</td><td>28.6</td></tr><tr><td>ZFS zstd, compressed ARC</td><td>16 GB pool + 10 GB ARC</td><td>382</td><td>-57%</td><td>326</td><td>53.3</td></tr><tr><td>ZFS lz4, compressed ARC</td><td>24 GB pool + 4 GB ARC</td><td>318</td><td>-64%</td><td>405</td><td>82.8</td></tr><tr><td>MyRocks lz4</td><td>8 GB block cache</td><td>1,888</td><td>+114%</td><td>49</td><td>0.5</td></tr><tr><td>MyRocks lz4</td><td>16 GB block cache</td><td>1,940</td><td>+120%</td><td>47</td><td>0.7</td></tr><tr><td>MyRocks lz4</td><td>24 GB block cache</td><td>1,442</td><td>+64%</td><td>55</td><td>24.3</td></tr><tr><td>MyRocks zstd</td><td>8 GB block cache</td><td>1,513</td><td>+72%</td><td>60</td><td>0.1</td></tr><tr><td>MyRocks zstd</td><td>16 GB block cache</td><td>1,540</td><td>+75%</td><td>60</td><td>0.1</td></tr><tr><td>MyRocks zstd</td><td>24 GB block cache</td><td>1,536</td><td>+74%</td><td>58</td><td>2.5</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=8 (zlib) — zlib level 1 (round 6)</td><td>24 GB pool</td><td>1,386</td><td>+57%</td><td>89</td><td>5.3</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=8 (zlib) — zlib level 1 (round 6)</td><td>26 GB pool</td><td>1,454</td><td>+65%</td><td>83</td><td>2.6</td></tr><tr><td>InnoDB ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=8 (zlib) — repeat (round 6)</td><td>24 GB pool</td><td>1,461</td><td>+66%</td><td>86</td><td>5.7</td></tr><tr><td>MyRocks lz4 — repeat (round 6)</td><td>16 GB block cache</td><td>1,963</td><td>+123%</td><td>47</td><td>0.6</td></tr></table></div>
+  <p class="note">† throughput in the last part of the warm-up differed from the measured window by more than 10%: not fully settled.
+  ‡ <strong>affected by a slow-SSD period</strong>: during these runs the datadir SSD took ~11 ms per write at ~1,000 writes/s (84–89% busy); the round 6 runs of the same setup saw ~2.2 ms at ~3,700 writes/s. The round 6 repeat of KEY_BLOCK_SIZE=8 at 24 GB ran at 1,461 tps instead of 712. Treat ‡ rows as understated by up to ~2×.</p>
+  <ul class="findings">
+    <li><strong>InnoDB table compression (zlib) is a real option: +65% over no compression</strong>. With KEY_BLOCK_SIZE=8 the data fits in a 24–26 GB pool and the server becomes CPU-bound: 1,386–1,461 tps, p95 83–89 ms (round 6, at zlib level 1 and repeated at the default level 6; the level made no difference). That is about 64% of zram lz4 and close to MyRocks. The round 4 numbers (650–710 tps) were measured while the datadir SSD was abnormally slow to write (‡) and understate it by ~2×.</li>
+    <li><strong>ZFS is slower than plain InnoDB in every configuration</strong> (280–578 tps). With 16K records on 4K sectors, a compressed record is stored in whole sectors, so lz4 reaches only 1.93× on this data (zram: 3.3×): the data does not fit in the ARC and reads stay on disk. zstd reaches 3.4–3.7× and serves 92–95% of the buffer pool's misses from the ARC, but runs out of CPU (56–61% kernel CPU): every ARC hit decompresses a 16K record again. ZFS itself also costs: with a normal 24 GB pool and a small 4 GB ARC it ran at 318 tps where ext4 ran at 794.</li>
+    <li><strong>MyRocks with lz4 comes closest to zram</strong>: 1,940 tps with a 16 GB block cache, 1,963 in the round 6 repeat (85% of zram's 2,286, same p95). Its data is 12 GB on disk (InnoDB: ~49 GB) and stays entirely in the Linux page cache, so there are no disk reads. A larger block cache hurts (24 GB: 1,442 tps, 19.5k reads/s) because uncompressed cache crowds the compressed files out of the page cache. zstd (6.7 GB on disk) is ~20% slower and CPU-bound. MyRocks uses more CPU per transaction than InnoDB (50–65% vs 42% per 1k tps), and it is a different engine, not a drop-in setting.</li>
+    <li><strong>InnoDB page compression (lz4) saves disk (21 GB instead of ~49 GB) but not cache</strong>: the buffer pool holds uncompressed pages, so it stays read-bound. Its single run (328 tps) fell in the slow-SSD period (‡) and was not repeated, so its throughput is not reliable.</li>
+  </ul>
+</div>
+
+<h2>Growing the data past what fits compressed (round 5)</h2>
+<p>The same compressible sysbench data, freshly loaded at 36, 48, 60 and 74 GB of tables (16 × 11–23M rows), uniform
+access, 64 threads, 20 min warm-up + 10 min measured. The compressed modes and the swap file use a buffer pool of
+1.1 × the data size. <strong>zram + swap</strong> = a 32 GB zram device (≈10 GB of RAM at ~3.2×) at priority 100 with the
+2nd-SSD swap file at priority 10; <strong>zswap + swap</strong> = <code>max_pool_percent=32</code> (≈10 GB), the same budget.
+zram alone has a 128 GB device: no budget. Numbers are not directly comparable with round 3 (fresh loads, longer warm-up).</p>
+<div class="card">
+  <h3>Throughput by data size</h3>
+  <div class="legend" id="lg5"></div>
+  <div id="c5"></div>
+  <details><summary>Table view (tps; † not fully settled after the warm-up)</summary><div class="tw"><table>
+    <tr><th>Setup</th><th>36 GB</th><th>48 GB</th><th>60 GB</th><th>74 GB</th></tr><tr><td>zram alone</td><td>2,174</td><td>1,542</td><td>1,337</td><td>594 †</td></tr><tr><td>zram + swap (~10 GB zram budget)</td><td>2,225</td><td>1,242</td><td>600 †</td><td>313 †</td></tr><tr><td>zswap + swap (~10 GB pool)</td><td>1,492</td><td>868</td><td>401</td><td>326 †</td></tr><tr><td>swap file alone</td><td>1,420</td><td>594 †</td><td>413</td><td>351</td></tr><tr><td>normal swap, 26 GB pool</td><td>774</td><td>506</td><td>430</td><td>375</td></tr></table></div></details>
+</div>
+<p class="note">Repeats at 48 GB (fresh load, SSDs trimmed first): normal swap 506 → 522 tps, swap file 594 → 685 (the first run had not settled), zram alone 1,542 → 1,539, zram + swap 1,242 → 1,219, zswap + swap 868 → 912: all within 0–5% except the unsettled run.</p>
+<ul class="findings">
+  <li><strong>While the data fits in the zram budget, zram + swap matches zram alone</strong> (36 GB: 2,225 vs 2,175 tps) without touching the disk, and beats zswap with the same budget by ~50%.</li>
+  <li><strong>Past the budget, zram + swap degrades instead of failing</strong>, but it sends the overflow to disk even while RAM is free: its fixed ~10 GB budget was too small for this server, so zram alone (no budget) stayed ahead up to 60 GB. Size zram's <code>disksize</code> to the RAM you can actually give it (≈ RAM left after the pool's resident part × ratio).</li>
+  <li><strong>zram alone did not OOM: it took the server down.</strong> At 74 GB (88 GB swapped, ~29 GB of RAM in zram) the run finished (594 tps), but stopping MySQL afterwards left the host unresponsive to SSH for 20–30 minutes; the kernel never killed anything. Without a fallback, an oversized pool on zram can stall the whole host.</li>
+  <li><strong>With the same compressed budget, zram + swap beat zswap + swap at 36–60 GB</strong> (+49%, +43%, +50%). At 74 GB both fell below normal swap with a 26 GB pool, and neither had settled after the warm-up.</li>
+  <li><strong>Once most data is on disk, a normal-size pool wins again</strong>: at 60–74 GB the swap file alone is no better than normal swap, and the compressed modes only help as far as their RAM budget reaches.</li>
+</ul>
+
+<h2>Real data: Join Order Benchmark on IMDb (round 6)</h2>
+<p>The 113 JOB queries on the real IMDb 2013 data set (~8 GB of InnoDB pages, 1.7× lz4 / 2.7× zstd), one stream, one
+warm-up pass then a measured pass, 60 s cap per query. To make the data not fit in RAM, 23 GB of the 31 GB were reserved
+as huge pages (unusable by MySQL), leaving ~6 GB available. Lower is better.</p>
+<div class="card"><div class="tw"><table>
+  <tr><th>Setup</th><th>Buffer pool</th><th>total s</th><th>geomean s</th><th>capped</th><th>InnoDB reads/s</th></tr>
+  <tr><td>normal swap</td><td>4 GB</td><td>996</td><td>2.26</td><td>2</td><td>776</td></tr><tr><td>swap file on 2nd SSD</td><td>9 GB</td><td>553</td><td>1.40</td><td>0</td><td>10</td></tr><tr><td>zram lz4</td><td>9 GB</td><td>545</td><td>1.32</td><td>0</td><td>0</td></tr><tr><td>zram zstd</td><td>9 GB</td><td>546</td><td>1.32</td><td>0</td><td>0</td></tr><tr><td>zswap lz4 (pool 15%)</td><td>9 GB</td><td>545</td><td>1.32</td><td>0</td><td>0</td></tr>
+</table></div>
+<ul class="findings">
+  <li><strong>A pool larger than the free RAM cut query time by 45% (996 → ~545 s), but compression was not the reason</strong>: a plain swap file on the 2nd SSD did as well (553 s) as zram lz4, zram zstd and zswap (545 s). Only ~3.5–4 GB of the pool was swapped, swap-ins were ~13 pages/s, and zram reported 86–149× "compression": the swapped part was pool pages the queries never touched. The pages the queries use fit in the ~6 GB that was left.</li>
+  <li>So on this real workload the useful lesson is the one from round 2: what matters is whether the <em>hot</em> data fits. With a single query stream, the server was CPU-bound on one core (12.6% of 8 threads) once the hot data was in memory.</li>
+</ul></div>
+
+<h2>Coming next</h2>
+<ul class="findings">
+  <li><strong>zswap with its shrinker off</strong> (running, ~01:00 UTC Nov 26): at 40 GB against zram and default zswap in the same session, and at 48 GB with the RAM the box can spare (pool 50% / 80%, and zram + swap with a 64 GB device).</li>
+</ul>
+
+<h2>Setup</h2>
+<ul class="findings">
+  <li>Bare metal: Intel Xeon E3-1270 v6 (4 cores / 8 threads), 31 GB RAM, 2 × 240 GB Intel SATA SSD. Ubuntu 24.04, kernel 6.8, Percona Server 8.4.11, binary log off.</li>
+  <li>Same server settings for every run; only the buffer pool size and swap setup change. Data restored before every run; clients on the same server.</li>
+  <li>zram: no disk swap, zswap off, priority 100. zswap: zsmalloc, max_pool_percent 50, 64 GB swap file on the second SSD. Compressed modes use <code>vm.page-cluster=0</code>, <code>vm.watermark_boost_factor=0</code>, <code>vm.watermark_scale_factor=125</code>, swappiness 180 (zram) / 100 (zswap).</li>
+</ul>
+
+<h2>Appendix A: how zram and zswap work</h2>
+<p>Both keep swapped-out memory compressed in RAM. They differ in where they sit in the swap path and in what happens when the compressed memory fills up.</p>
+<div class="cols">
+  <div class="card"><h3>zram: a compressed RAM disk used as a swap device</h3>
+    <div class="flow"><span class="b">InnoDB page (anonymous memory)</span><span class="a">→ swap-out →</span><span class="b hl">/dev/zram0 (compressed RAM)</span><span class="a">→ full →</span><span class="b">next swap device by priority, or OOM</span></div>
+    <ul class="findings">
+      <li>A block device whose storage is compressed RAM; you <code>mkswap</code> / <code>swapon</code> it like a disk.</li>
+      <li>No disk behind it. <code>disksize</code> is the uncompressed capacity; RAM is used only as pages arrive (compressed size + overhead).</li>
+      <li>The kernel picks swap devices by priority and <em>free slots</em>, not by RAM: zram falls back to a lower-priority swap device only when its <code>disksize</code> is full. So <code>disksize</code> is zram's memory budget (≈ disksize ÷ compression ratio). Without a fallback, a full device or exhausted RAM means the OOM killer.</li>
+      <li>Pages never move from zram to the fallback on their own; optional writeback (<code>backing_dev</code>, <code>idle</code>, <code>writeback</code>) moves idle pages when triggered.</li>
+      <li>Incompressible pages are stored as they are and still use RAM.</li>
+    </ul></div>
+  <div class="card"><h3>zswap: a compressed cache in front of disk swap</h3>
+    <div class="flow"><span class="b">InnoDB page</span><span class="a">→ swap-out →</span><span class="b hl">zswap pool (compressed RAM)</span><span class="a">→ pool full / cold / incompressible →</span><span class="b">swap file on disk</span></div>
+    <ul class="findings">
+      <li>Not a device: it intercepts pages on their way to a real swap device and keeps them compressed in RAM. It needs that swap device.</li>
+      <li>The pool is capped at <code>max_pool_percent</code> of RAM. Pages that do not compress well enough (<code>accept_threshold_percent</code>) go straight to disk.</li>
+      <li>Older pages are written back, decompressed, to the swap device when the pool fills, and proactively by the zswap shrinker (on by default in kernel 6.8). A miss is a disk read.</li>
+      <li>Degrades gradually instead of failing: worst case it behaves like disk swap.</li>
+    </ul></div>
+</div>
+<div class="card"><div class="tw"><table class="lt">
+  <tr><th></th><th>zram</th><th>zswap</th></tr>
+  <tr><td>What it is</td><td>swap device made of compressed RAM</td><td>compressed cache on top of a disk swap device</td></tr>
+  <tr><td>Needs disk swap</td><td>no (optional lower-priority fallback)</td><td>yes</td></tr>
+  <tr><td>Memory budget</td><td><code>disksize</code> (uncompressed) and RAM</td><td><code>max_pool_percent</code> of RAM (compressed)</td></tr>
+  <tr><td>When full</td><td>next swap device, else OOM</td><td>oldest pages written back to disk</td></tr>
+  <tr><td>Incompressible pages</td><td>kept in RAM uncompressed</td><td>sent to disk</td></tr>
+  <tr><td>Use together</td><td colspan="2">not usually: zswap would cache in front of zram; turn zswap off when using zram</td></tr>
+</table></div></div>
+
+<h2>Appendix B: configuration used</h2>
+<p>Ubuntu 24.04, kernel 6.8.0-151 (stock zswap defaults before the study: off, lzo, zbud, 20%). Exact commands from
+<a href="https://github.com/Percona-Lab/zram-zswap-db-benchmark/blob/main/scripts/zstudy.sh">scripts/zstudy.sh</a>; mysqld is stopped before every change (swapoff has to bring swapped pages back).</p>
+<h3>MySQL (Percona Server 8.4.11), every run</h3>
+<pre>[mysqld]
+disable_log_bin
+max_connections = 300
+innodb_buffer_pool_size = &lt;varied&gt;
+innodb_buffer_pool_instances = 8
+innodb_buffer_pool_load_at_startup = OFF
+innodb_buffer_pool_dump_at_shutdown = OFF
+innodb_redo_log_capacity = 8G
+innodb_io_capacity = 2000
+innodb_io_capacity_max = 4000
+# innodb_flush_method: default O_DIRECT (ZFS runs: fsync, innodb_doublewrite = OFF)</pre>
+<h3>Kernel settings</h3>
+<pre># normal swap ("disk"): kernel defaults
+vm.swappiness = 60   vm.page-cluster = 3   vm.watermark_boost_factor = 15000   vm.watermark_scale_factor = 10
+
+# all compressed modes and the 2nd-SSD swap file ("disk2"): zram tuning from the Arch Linux wiki
+vm.page-cluster = 0  vm.watermark_boost_factor = 0  vm.watermark_scale_factor = 125
+vm.swappiness = 180  # zram modes
+vm.swappiness = 100  # zswap, disk2</pre>
+<h3>Swap modes</h3>
+<pre># disk: the host's own 8 GB swap file on the datadir SSD
+swapon /swapfile
+
+# disk2: swap file on the second SSD, no compression
+fallocate -l 64G /data/zstudy-swap.img; chmod 600 /data/zstudy-swap.img; mkswap /data/zstudy-swap.img
+swapon /data/zstudy-swap.img
+
+# zswap (lz4 or zstd) in front of the same swap file
+echo lz4      &gt; /sys/module/zswap/parameters/compressor        # or zstd
+echo zsmalloc &gt; /sys/module/zswap/parameters/zpool
+echo 50       &gt; /sys/module/zswap/parameters/max_pool_percent  # 80 and 12 in follow-ups, 32 in round 5
+echo Y        &gt; /sys/module/zswap/parameters/enabled
+swapon /data/zstudy-swap.img
+# defaults kept: accept_threshold_percent 90, shrinker_enabled Y, same_filled_pages_enabled Y
+
+# zram (lz4 or zstd), no disk swap, zswap off
+echo N &gt; /sys/module/zswap/parameters/enabled
+modprobe zram num_devices=1
+echo lz4 &gt; /sys/block/zram0/comp_algorithm   # or zstd
+echo 64G &gt; /sys/block/zram0/disksize         # 32G in round 1, 128G in round 5
+mkswap /dev/zram0; swapon -p 100 /dev/zram0
+
+# zram + lower-priority disk fallback
+echo 12G &gt; /sys/block/zram0/disksize         # 32G in round 5 (~10 GB RAM at ~3.3x)
+mkswap /dev/zram0; swapon -p 100 /dev/zram0
+swapon -p 10 /data/zstudy-swap.img
+
+# zram writeback: a backing device set before disksize, idle pages written out every minute
+losetup -f --show --direct-io=on /data/zstudy-zram-wb.img      # -&gt; /dev/loopN
+echo /dev/loopN &gt; /sys/block/zram0/backing_dev
+while true; do echo idle &gt; /sys/block/zram0/writeback; echo all &gt; /sys/block/zram0/idle; sleep 60; done</pre>
+
+<footer>Percona Lab · <a href="https://github.com/Percona-Lab/zram-zswap-db-benchmark">source, scripts and raw data</a> ·
+<a href="https://github.com/Percona-Lab/sysbench-compressible">sysbench-compressible</a> · results and text CC BY 4.0, code Apache 2.0.
+AI-generated, spot-checked only.</footer>
+</main>
+<div class="tip" id="tip"></div>
+<script>
+const D = {"series": [{"key": "zram-lz4", "label": "zram lz4", "pts": [[32.0, 1227.5, 137.35], [36.0, 1692.5, 90.78], [40.0, 2286.2, 50.11], [44.0, 2273.0, 51.02], [48.0, 2283.6, 51.02]]}, {"key": "zswap-lz4", "label": "zswap lz4", "pts": [[32.0, 1167.3, 132.49], [36.0, 1304.1, 121.08], [40.0, 1698.3, 82.96], [44.0, 1682.4, 82.96], [48.0, 1632.4, 87.56]]}, {"key": "zram-zstd", "label": "zram zstd", "pts": [[32.0, 1194.9, 130.13], [36.0, 1202.5, 139.85], [40.0, 1760.6, 71.83], [44.0, 1689.1, 74.46], [48.0, 1689.0, 74.46]]}, {"key": "zswap-zstd", "label": "zswap zstd", "pts": [[32.0, 1138.6, 137.35], [36.0, 1168.8, 130.13], [40.0, 1439.9, 196.89], [44.0, 1228.7, 282.25], [48.0, 1259.8, 267.41]]}, {"key": "disk2", "label": "swap file on 2nd SSD, no compression", "pts": [[32.0, 932.5, 139.85], [40.0, 1233.4, 92.42]]}, {"key": "disk", "label": "normal swap (baseline)", "pts": [[16.0, 511.0, 253.35], [20.0, 653.2, 215.44], [24.0, 794.0, 186.54], [26.0, 881.5, 170.48], [28.0, 798.9, 183.21]]}], "survey": [{"name": "BenchBase SmallBank*", "lz4": 3.49, "zstd": 6.32}, {"name": "sysbench, --data-random-pct=10", "lz4": 2.96, "zstd": 5.9, "ours": true}, {"name": "BenchBase AuctionMark", "lz4": 2.79, "zstd": 4.34}, {"name": "TPC-H (go-tpc)", "lz4": 2.38, "zstd": 3.26}, {"name": "BenchBase SEATS", "lz4": 2.27, "zstd": 3.13}, {"name": "BenchBase OT-Metrics", "lz4": 2.02, "zstd": 3.15}, {"name": "BenchBase Twitter", "lz4": 1.96, "zstd": 2.4}, {"name": "employees sample DB", "lz4": 1.76, "zstd": 2.41}, {"name": "IMDb (real data)", "lz4": 1.73, "zstd": 2.68}, {"name": "BenchBase TATP", "lz4": 1.59, "zstd": 2.35}, {"name": "BenchBase TPC-C", "lz4": 1.42, "zstd": 2.11}, {"name": "TPC-C (go-tpc)", "lz4": 1.36, "zstd": 1.84}, {"name": "HammerDB TPROC-C", "lz4": 1.33, "zstd": 1.72}, {"name": "BenchBase Wikipedia", "lz4": 1.22, "zstd": 1.45}, {"name": "sysbench (stock)", "lz4": 1.14, "zstd": 2.12}, {"name": "BenchBase YCSB", "lz4": 1.14, "zstd": 1.36}], "lat": [{"name": "lz4 decompress (16 KiB page)", "us": 4.2, "kind": "mem"}, {"name": "zstd decompress (16 KiB page)", "us": 24, "kind": "mem"}, {"name": "Local NVMe SSD read, idle", "us": 75, "kind": "disk"}, {"name": "SATA SSD read, idle", "us": 150, "kind": "disk"}, {"name": "Cloud network block storage read", "us": 750, "kind": "disk"}, {"name": "This server's SATA SSD under load", "us": 3300, "kind": "disk"}], "r5": [{"label": "zram alone", "pts": [[35.7, 2174.5, 58.92, 1.8, 0.0], [47.9, 1542.4, 92.42, -0.8, 0.0], [60.2, 1337.0, 101.13, 1.6, 0.0], [73.5, 594.4, 200.47, 19.3, 0.0]]}, {"label": "zram + swap (~10 GB zram budget)", "pts": [[35.7, 2225.3, 54.83, 3.0, 0.0], [47.9, 1241.9, 114.72, 6.2, 14389.2], [60.2, 600.2, 539.71, -10.7, 18205.7], [73.5, 312.7, 846.57, 56.2, 12801.6]]}, {"label": "zswap + swap (~10 GB pool)", "pts": [[35.7, 1492.4, 90.78, 3.3, 21279.2], [47.9, 867.5, 139.85, 2.1, 15874.3], [60.2, 400.7, 147.61, 8.6, 20768.8], [73.5, 326.0, 144.97, 16.8, 17258.3]]}, {"label": "swap file alone", "pts": [[35.7, 1419.6, 74.46, 0.2, 39024.5], [47.9, 593.5, 282.25, 19.8, 26527.4], [60.2, 413.1, 458.96, -0.4, 22949.7], [73.5, 351.2, 493.24, 0.9, 22740.8]]}, {"label": "normal swap, 26 GB pool", "pts": [[35.7, 774.3, 196.89, 0.7, 0.0], [47.9, 505.6, 272.27, -5.3, 0.0], [60.2, 430.4, 297.92, -3.3, 0.0], [73.5, 374.8, 337.94, 1.6, 0.0]]}]};
+const NS = "http://www.w3.org/2000/svg";
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const el = (t, a, p) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); if (p) p.appendChild(e); return e; };
+const tip = document.getElementById("tip");
+function showTip(ev, h) { tip.innerHTML = h; tip.style.opacity = 1; const x = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8); tip.style.left = x + "px"; tip.style.top = (ev.clientY + 14) + "px"; }
+function hideTip() { tip.style.opacity = 0; }
+const fmt = n => n.toLocaleString("en-US", {maximumFractionDigits: 0});
+const COLS = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6"];
+
+function lineChart() {
+  const host = document.getElementById("c1"); host.innerHTML = "";
+  const lg = document.getElementById("lg1"); lg.innerHTML = "";
+  D.series.forEach((s, i) => { lg.insertAdjacentHTML("beforeend", `<span><i style="background:var(${COLS[i]})"></i>${s.label}</span>`); });
+  const W = Math.max(320, host.clientWidth), H = W < 520 ? 300 : 360, m = {l: 48, r: W < 520 ? 12 : 96, t: 12, b: 36};
+  const svg = el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Transactions per second by buffer pool size for six swap setups"}, host);
+  const xs = [14, 50], ymax = 2500;
+  const X = v => m.l + (v - xs[0]) / (xs[1] - xs[0]) * (W - m.l - m.r), Y = v => H - m.b - v / ymax * (H - m.t - m.b);
+  for (let v = 0; v <= ymax; v += 500) { el("line", {x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css("--grid")}, svg); const t = el("text", {x: m.l - 8, y: Y(v) + 4, "text-anchor": "end"}, svg); t.textContent = fmt(v); }
+  (W < 520 ? [16, 24, 32, 40, 48] : [16, 20, 24, 28, 32, 36, 40, 44, 48]).forEach(v => { const t = el("text", {x: X(v), y: H - m.b + 18, "text-anchor": "middle"}, svg); t.textContent = v; });
+  const xl = el("text", {x: (m.l + W - m.r) / 2, y: H - 4, "text-anchor": "middle"}, svg); xl.textContent = "buffer pool, GB (server RAM: 31 GB)";
+  const ramX = X(31); el("line", {x1: ramX, x2: ramX, y1: m.t, y2: H - m.b, stroke: css("--text-muted"), "stroke-dasharray": "3 4"}, svg);
+  const rt = el("text", {x: ramX + 4, y: m.t + 12}, svg); rt.textContent = "RAM";
+  D.series.forEach((s, i) => {
+    const c = css(COLS[i]);
+    el("path", {d: s.pts.map((p, j) => (j ? "L" : "M") + X(p[0]) + "," + Y(p[1])).join(""), fill: "none", stroke: c, "stroke-width": 2, "stroke-linejoin": "round"}, svg);
+    s.pts.forEach(p => el("circle", {cx: X(p[0]), cy: Y(p[1]), r: 4, fill: c, stroke: css("--surface-1"), "stroke-width": 2}, svg));
+    if (W >= 520 && i === 0) { const last = s.pts[s.pts.length - 1]; const t = el("text", {x: X(last[0]) + 8, y: Y(last[1]) + 4, class: "lbl"}, svg); t.textContent = s.label; }
+  });
+  const ov = el("rect", {x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent"}, svg);
+  const cross = el("line", {y1: m.t, y2: H - m.b, stroke: css("--text-muted"), opacity: 0}, svg);
+  const sizes = [...new Set(D.series.flatMap(s => s.pts.map(p => p[0])))].sort((a, b) => a - b);
+  ov.addEventListener("mousemove", ev => {
+    const r = svg.getBoundingClientRect(); const vx = (ev.clientX - r.left) * W / r.width;
+    const g = sizes.reduce((a, b) => Math.abs(X(b) - vx) < Math.abs(X(a) - vx) ? b : a);
+    cross.setAttribute("x1", X(g)); cross.setAttribute("x2", X(g)); cross.setAttribute("opacity", .5);
+    let h = `<b>${g} GB buffer pool</b>`;
+    D.series.forEach((s, i) => { const p = s.pts.find(p => p[0] === g); if (p) h += `<br><span style="color:var(${COLS[i]})">●</span> ${s.label}: ${fmt(p[1])} tps, p95 ${Math.round(p[2])} ms`; });
+    showTip(ev, h);
+  });
+  ov.addEventListener("mouseleave", () => { hideTip(); cross.setAttribute("opacity", 0); });
+}
+
+function surveyChart() {
+  const host = document.getElementById("c2"); host.innerHTML = "";
+  const W = Math.max(320, host.clientWidth), narrow = W < 560, lw = narrow ? 150 : 230, rh = 26, m = {t: 8, b: 28};
+  const H = m.t + m.b + D.survey.length * rh, xmax = 7;
+  const svg = el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "lz4 and zstd compression ratios of InnoDB pages per benchmark"}, host);
+  const X = v => lw + v / xmax * (W - lw - 40);
+  for (let v = 0; v <= xmax; v++) { el("line", {x1: X(v), x2: X(v), y1: m.t, y2: H - m.b, stroke: css("--grid")}, svg); const t = el("text", {x: X(v), y: H - m.b + 16, "text-anchor": "middle"}, svg); t.textContent = v + "×"; }
+  el("line", {x1: X(3), x2: X(3), y1: m.t, y2: H - m.b, stroke: css("--text-muted"), "stroke-dasharray": "4 4"}, svg);
+  D.survey.forEach((s, i) => {
+    const y = m.t + i * rh;
+    const t = el("text", {x: lw - 8, y: y + rh / 2 + 4, "text-anchor": "end", class: "lbl"}, svg); t.textContent = narrow && s.name.length > 22 ? s.name.slice(0, 21) + "…" : s.name;
+    if (s.ours) t.setAttribute("font-weight", "700");
+    [["lz4", "--s1", 0], ["zstd", "--s2", 1]].forEach(([k, c, j]) => {
+      const bh = 9, by = y + 4 + j * (bh + 2);
+      el("rect", {x: X(0), y: by, width: Math.max(2, X(s[k]) - X(0)), height: bh, rx: 2, fill: css(c)}, svg);
+    });
+    const v = el("text", {x: X(s.zstd) + 6, y: y + rh / 2 + 4, class: "val"}, svg); v.textContent = s.lz4.toFixed(2) + "× / " + s.zstd.toFixed(2) + "×";
+    const hit = el("rect", {x: 0, y, width: W, height: rh, fill: "transparent"}, svg);
+    hit.addEventListener("mousemove", ev => showTip(ev, `<b>${s.name}</b><br>lz4: ${s.lz4.toFixed(2)}×<br>zstd: ${s.zstd.toFixed(2)}×`));
+    hit.addEventListener("mouseleave", hideTip);
+  });
+}
+
+function latChart() {
+  const host = document.getElementById("c3"); host.innerHTML = "";
+  const W = Math.max(320, host.clientWidth), narrow = W < 560, lw = narrow ? 150 : 250, rh = 30, m = {t: 4, b: 28};
+  const H = m.t + m.b + D.lat.length * rh, lo = 1, hi = 10000;
+  const svg = el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Page fetch latency in microseconds, log scale"}, host);
+  const X = v => lw + Math.log10(v / lo) / Math.log10(hi / lo) * (W - lw - 70);
+  [1, 10, 100, 1000, 10000].forEach(v => { el("line", {x1: X(v), x2: X(v), y1: m.t, y2: H - m.b, stroke: css("--grid")}, svg); const t = el("text", {x: X(v), y: H - m.b + 16, "text-anchor": "middle"}, svg); t.textContent = fmt(v); });
+  D.lat.forEach((d, i) => {
+    const y = m.t + i * rh;
+    const t = el("text", {x: lw - 8, y: y + rh / 2 + 4, "text-anchor": "end", class: "lbl"}, svg); t.textContent = narrow && d.name.length > 22 ? d.name.slice(0, 21) + "…" : d.name;
+    el("rect", {x: X(lo), y: y + 7, width: X(d.us) - X(lo), height: rh - 14, rx: 3, fill: css(d.kind === "mem" ? "--s1" : "--s2")}, svg);
+    const v = el("text", {x: X(d.us) + 6, y: y + rh / 2 + 4, class: "val"}, svg); v.textContent = fmt(d.us) + " µs";
+    const hit = el("rect", {x: 0, y, width: W, height: rh, fill: "transparent"}, svg);
+    hit.addEventListener("mousemove", ev => showTip(ev, `<b>${d.name}</b><br>${fmt(d.us)} µs`));
+    hit.addEventListener("mouseleave", hideTip);
+  });
+}
+
+function sizeChart() {
+  const host = document.getElementById("c5"); host.innerHTML = "";
+  const lg = document.getElementById("lg5"); lg.innerHTML = "";
+  D.r5.forEach((s, i) => { lg.insertAdjacentHTML("beforeend", `<span><i style="background:var(${COLS[i]})"></i>${s.label}</span>`); });
+  const W = Math.max(320, host.clientWidth), H = W < 520 ? 300 : 340, m = {l: 48, r: W < 520 ? 12 : 24, t: 12, b: 36};
+  const svg = el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Transactions per second by data size for five swap setups"}, host);
+  const xs = [32, 78], ymax = 2500;
+  const X = v => m.l + (v - xs[0]) / (xs[1] - xs[0]) * (W - m.l - m.r), Y = v => H - m.b - v / ymax * (H - m.t - m.b);
+  for (let v = 0; v <= ymax; v += 500) { el("line", {x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css("--grid")}, svg); const t = el("text", {x: m.l - 8, y: Y(v) + 4, "text-anchor": "end"}, svg); t.textContent = fmt(v); }
+  [36, 48, 60, 74].forEach(v => { const t = el("text", {x: X(v), y: H - m.b + 18, "text-anchor": "middle"}, svg); t.textContent = v; });
+  const xl = el("text", {x: (m.l + W - m.r) / 2, y: H - 4, "text-anchor": "middle"}, svg); xl.textContent = "data size, GB of tables (server RAM: 31 GB)";
+  D.r5.forEach((s, i) => {
+    const c = css(COLS[i]);
+    el("path", {d: s.pts.map((p, j) => (j ? "L" : "M") + X(p[0]) + "," + Y(p[1])).join(""), fill: "none", stroke: c, "stroke-width": 2, "stroke-linejoin": "round"}, svg);
+    s.pts.forEach(p => el("circle", {cx: X(p[0]), cy: Y(p[1]), r: 4, fill: c, stroke: css("--surface-1"), "stroke-width": 2}, svg));
+  });
+  const ov = el("rect", {x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent"}, svg);
+  const cross = el("line", {y1: m.t, y2: H - m.b, stroke: css("--text-muted"), opacity: 0}, svg);
+  const sizes = [35.7, 47.9, 60.2, 73.5];
+  ov.addEventListener("mousemove", ev => {
+    const r = svg.getBoundingClientRect(); const vx = (ev.clientX - r.left) * W / r.width;
+    const g = sizes.reduce((a, b) => Math.abs(X(b) - vx) < Math.abs(X(a) - vx) ? b : a);
+    cross.setAttribute("x1", X(g)); cross.setAttribute("x2", X(g)); cross.setAttribute("opacity", .5);
+    let h = `<b>${g} GB of tables</b>`;
+    D.r5.forEach((s, i) => { const p = s.pts.find(p => p[0] === g); if (p) h += `<br><span style="color:var(${COLS[i]})">●</span> ${s.label}: ${fmt(p[1])} tps, p95 ${Math.round(p[2])} ms${p[3] !== null && Math.abs(p[3]) > 10 ? " (not settled)" : ""}`; });
+    showTip(ev, h);
+  });
+  ov.addEventListener("mouseleave", () => { hideTip(); cross.setAttribute("opacity", 0); });
+}
+function draw() { lineChart(); sizeChart(); surveyChart(); latChart(); }
+draw();
+let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(draw, 120); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+</script>
+</body>
+</html>

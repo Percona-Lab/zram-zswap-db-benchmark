@@ -4,7 +4,7 @@ Can Linux zram or zswap (lz4 or zstd) give an I/O-bound InnoDB workload more thr
 `innodb_buffer_pool_size` go beyond what fits in RAM? Three rounds of benchmarks on one bare-metal server, a survey of
 how well 16 benchmarks' data compresses, and lz4 / zstd page latency next to storage latency.
 
-Results page: https://percona-lab.github.io/zram-zswap-db-benchmark/
+Results: v1 (exploratory) https://percona-lab.github.io/zram-zswap-db-benchmark/v1/ ; v2 (consistent protocol) in preparation
 
 **This study was run and written up by an AI agent (Claude) under the direction of a person. The numbers are
 measured, but the write-up and conclusions are AI-generated and were spot-checked only; they may contain mistakes.**
